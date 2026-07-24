@@ -12,7 +12,6 @@ type Config struct {
 	DataDir       string
 	BooksDir      string
 	BookdropDir   string
-	SessionSecret string
 	SecureCookies bool
 }
 
@@ -23,7 +22,6 @@ func Load() Config {
 		DataDir:       getenv("DATA_DIR", "./data"),
 		BooksDir:      getenv("BOOKS_DIR", "./books"),
 		BookdropDir:   getenv("BOOKDROP_DIR", "./bookdrop"),
-		SessionSecret: getenv("SESSION_SECRET", "dev-only-change-me"),
 		SecureCookies: getenvBool("SECURE_COOKIES", false),
 	}
 }
