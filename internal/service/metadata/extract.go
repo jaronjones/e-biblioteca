@@ -311,7 +311,7 @@ func extractCBZ(path string) (models.ExtractedMetadata, error) {
 	}
 	defer r.Close()
 
-	var firstImage *zip.File
+	var images []*zip.File
 	for _, f := range r.File {
 		name := strings.ToLower(f.Name)
 		if strings.HasSuffix(name, "comicinfo.xml") {
@@ -347,17 +347,20 @@ func extractCBZ(path string) (models.ExtractedMetadata, error) {
 				}
 			}
 		}
-		if firstImage == nil {
-			ext := filepath.Ext(name)
-			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" {
-				// skip mac junk
-				if !strings.Contains(name, "__macosx") {
-					firstImage = f
-				}
-			}
+		if strings.Contains(name, "__macosx") {
+			continue
+		}
+		ext := filepath.Ext(name)
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" {
+			images = append(images, f)
 		}
 	}
-	if firstImage != nil && len(meta.CoverData) == 0 {
+	// Cover = first page in natural sort order (same as ListCBZPages), not zip directory order.
+	sort.Slice(images, func(i, j int) bool {
+		return naturalLess(images[i].Name, images[j].Name)
+	})
+	if len(images) > 0 && len(meta.CoverData) == 0 {
+		firstImage := images[0]
 		rc, err := firstImage.Open()
 		if err == nil {
 			data, _ := readLimited(rc, MaxZipEntryBytes)

@@ -6,7 +6,9 @@
   const status = document.getElementById('reader-status');
   const prog = JSON.parse(document.getElementById('progress-data').textContent || '{}');
 
-  const book = ePub(`/stream/${bookId}`);
+  // /stream/{id} has no .epub extension; without openAs epub.js treats it as a directory
+  // and requests META-INF/container.xml under /stream/ (404, blank viewer).
+  const book = ePub(`/stream/${bookId}`, { openAs: 'epub' });
   const rendition = book.renderTo(el, { width: '100%', height: '100%', flow: 'paginated' });
   await book.ready;
   if (prog.position && prog.position.cfi) {

@@ -999,12 +999,10 @@ func (a *App) readBook(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) requireDownload(w http.ResponseWriter, r *http.Request) bool {
 	u := a.currentUser(r)
-	// Session users need CanDownload; OPDS basic-auth path has no session user.
-	if u != nil {
-		if err := auth.RequirePerm(u, func(p models.Permissions) bool { return p.CanDownload }); err != nil {
-			http.Error(w, "forbidden", 403)
-			return false
-		}
+	// Fail closed when no user (consistent with bookDownload). OPDS attaches a linked user.
+	if err := auth.RequirePerm(u, func(p models.Permissions) bool { return p.CanDownload }); err != nil {
+		http.Error(w, "forbidden", 403)
+		return false
 	}
 	return true
 }
