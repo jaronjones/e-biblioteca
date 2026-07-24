@@ -1,0 +1,9 @@
+/data/
+/books/*
+!/books/.gitkeep
+/bookdrop/*
+!/bookdrop/.gitkeep
+.env
+*.exe
+/bin/
+/tmp/
