@@ -86,6 +86,25 @@ Use the OPDS username/password (HTTP basic auth).
 
 Themes live in `web/static/css/themes.css` as CSS custom property packs. UI components in `base.css` use only semantic tokens (`--color-base-100`, `--color-primary`, etc.) so themes swap via `data-theme` without rewriting markup.
 
+## Offline / air-gapped
+
+Frontend libraries (htmx, JSZip, epub.js) are vendored under `web/static/js/vendor/`. No CDN access is required at runtime. See that directory’s README for versions and refresh URLs.
+
+## Development checks
+
+```bash
+go test ./...
+go vet ./...
+gofmt -l .
+go build -o bin/e-biblioteca ./cmd/server
+```
+
+CI runs the same on every pull request (`.github/workflows/ci.yml`).
+
+## Implementation phases
+
+See [docs/phases/README.md](docs/phases/README.md) for the phase map. Core features shipped in Phase 1; Phase 8 hardens docs, tests, CI, and offline assets.
+
 ## License
 
 MIT

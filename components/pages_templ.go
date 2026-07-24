@@ -2301,7 +2301,7 @@ func ReaderPage(book models.Book, prog *models.Progress) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		if book.Format == "epub" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 210, "<div id=\"epub-viewer\" class=\"reader-stage\"></div><script defer src=\"https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js\"></script> <script defer src=\"https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js\"></script> <script defer src=\"/static/js/readers/epub.js\"></script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 210, "<div id=\"epub-viewer\" class=\"reader-stage\"></div><script defer src=\"/static/js/vendor/jszip.min.js\"></script> <script defer src=\"/static/js/vendor/epub.min.js\"></script> <script defer src=\"/static/js/readers/epub.js\"></script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
