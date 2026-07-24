@@ -1,14 +1,27 @@
 package components
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
 
+	"github.com/jjones/e-biblioteca/internal/auth"
 	"github.com/jjones/e-biblioteca/internal/models"
 	"github.com/jjones/e-biblioteca/internal/service/metadata"
 )
+
+// CSRFField renders a hidden CSRF input from the request context (no JS required).
+templ CSRFField() {
+	if tok := csrfToken(ctx); tok != "" {
+		<input type="hidden" name="csrf_token" value={ tok }/>
+	}
+}
+
+func csrfToken(ctx context.Context) string {
+	return auth.CSRFFromContext(ctx)
+}
 
 templ SetupPage(errMsg string) {
 	<div class="auth-card card">
@@ -18,6 +31,7 @@ templ SetupPage(errMsg string) {
 			<div class="alert alert-error">{ errMsg }</div>
 		}
 		<form method="post" action="/setup" class="form-stack">
+			@CSRFField()
 			<label>Username<input class="input" name="username" required autocomplete="username"/></label>
 			<label>Display name<input class="input" name="display_name" autocomplete="name"/></label>
 			<label>Password<input class="input" type="password" name="password" required minlength="8" autocomplete="new-password"/></label>
@@ -34,6 +48,7 @@ templ LoginPage(errMsg string) {
 			<div class="alert alert-error">{ errMsg }</div>
 		}
 		<form method="post" action="/login" class="form-stack">
+			@CSRFField()
 			<label>Username<input class="input" name="username" required autocomplete="username"/></label>
 			<label>Password<input class="input" type="password" name="password" required autocomplete="current-password"/></label>
 			<button class="btn btn-primary" type="submit">Sign in</button>
@@ -197,7 +212,8 @@ templ BookDetailPage(book models.Book, prog *models.Progress, shelves []models.S
 						<div class="chip-row">
 							for _, sh := range shelves {
 								<form method="post" action={ fmt.Sprintf("/shelves/%d/books/%d", sh.ID, book.ID) }>
-									<button class="btn btn-ghost btn-sm" type="submit">{ sh.Name }</button>
+									@CSRFField()
+			<button class="btn btn-ghost btn-sm" type="submit">{ sh.Name }</button>
 								</form>
 							}
 						</div>
@@ -222,6 +238,7 @@ templ BookEditPage(book models.Book, errMsg string) {
 			<div class="alert alert-error">{ errMsg }</div>
 		}
 		<form method="post" action={ fmt.Sprintf("/books/%d/edit", book.ID) } class="form-stack card form-card">
+			@CSRFField()
 			<label>Title<input class="input" name="title" value={ strPtr(book.Metadata.Title, book.FileName) }/></label>
 			<label>Subtitle<input class="input" name="subtitle" value={ strPtr(book.Metadata.Subtitle, "") }/></label>
 			<label>Authors (comma separated)<input class="input" name="authors" value={ strings.Join(book.Authors, ", ") }/></label>
@@ -260,7 +277,8 @@ templ LookupResults(bookID int64, results []metadata.LookupResult) {
 						}
 					</div>
 					<form method="post" action={ fmt.Sprintf("/books/%d/apply-lookup", bookID) }>
-						<input type="hidden" name="index" value={ fmt.Sprintf("%d", i) }/>
+						@CSRFField()
+			<input type="hidden" name="index" value={ fmt.Sprintf("%d", i) }/>
 						<button class="btn btn-sm btn-primary" type="submit">Apply</button>
 					</form>
 				</div>
@@ -322,7 +340,8 @@ templ LibrariesPage(libs []models.Library, booksDir, errMsg string) {
 			<section class="card form-card">
 				<h2>New library</h2>
 				<form method="post" action="/libraries" class="form-stack">
-					<label>Name<input class="input" name="name" required/></label>
+					@CSRFField()
+			<label>Name<input class="input" name="name" required/></label>
 					<label>Path<input class="input" name="path" placeholder="fiction" required/></label>
 					<label>Icon<input class="input" name="icon" value="book"/></label>
 					<label class="check"><input type="checkbox" name="watch"/> Watch for new files</label>
@@ -341,10 +360,12 @@ templ LibrariesPage(libs []models.Library, booksDir, errMsg string) {
 						</div>
 						<div class="chip-row">
 							<form method="post" action={ fmt.Sprintf("/libraries/%d/scan", l.ID) }>
-								<button class="btn btn-primary btn-sm" type="submit">Scan</button>
+								@CSRFField()
+			<button class="btn btn-primary btn-sm" type="submit">Scan</button>
 							</form>
 							<form method="post" action={ fmt.Sprintf("/libraries/%d/delete", l.ID) } onsubmit="return confirm('Delete library?')">
-								<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+								@CSRFField()
+			<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
 							</form>
 							<a class="btn btn-ghost btn-sm" href={ fmt.Sprintf("/books?library=%d", l.ID) }>Browse</a>
 						</div>
@@ -355,7 +376,8 @@ templ LibrariesPage(libs []models.Library, booksDir, errMsg string) {
 		<section class="card form-card section">
 			<h2>Upload a book</h2>
 			<form method="post" action="/upload" enctype="multipart/form-data" class="form-stack">
-				<label>Library
+				@CSRFField()
+			<label>Library
 					<select class="select" name="library_id" required>
 						for _, l := range libs {
 							<option value={ fmt.Sprintf("%d", l.ID) }>{ l.Name }</option>
@@ -377,7 +399,8 @@ templ ShelvesPage(shelves []models.Shelf, errMsg string) {
 		}
 		<div class="two-col">
 			<form method="post" action="/shelves" class="card form-card form-stack">
-				<h2>New shelf</h2>
+				@CSRFField()
+			<h2>New shelf</h2>
 				<label>Name<input class="input" name="name" required/></label>
 				<label>Icon<input class="input" name="icon" value="bookmark"/></label>
 				<button class="btn btn-primary" type="submit">Create</button>
@@ -390,7 +413,8 @@ templ ShelvesPage(shelves []models.Shelf, errMsg string) {
 							<p class="muted">{ fmt.Sprintf("%d books", sh.BookCount) }</p>
 						</div>
 						<form method="post" action={ fmt.Sprintf("/shelves/%d/delete", sh.ID) }>
-							<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+							@CSRFField()
+			<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
 						</form>
 					</div>
 				}
@@ -424,7 +448,8 @@ templ MagicShelvesPage(list []models.MagicShelf, errMsg string) {
 		}
 		<div class="two-col">
 			<form method="post" action="/magic-shelves" class="card form-card form-stack">
-				<h2>New magic shelf</h2>
+				@CSRFField()
+			<h2>New magic shelf</h2>
 				<label>Name<input class="input" name="name" required/></label>
 				<label>Author contains<input class="input" name="author"/></label>
 				<label>Category contains<input class="input" name="category"/></label>
@@ -456,7 +481,8 @@ templ MagicShelvesPage(list []models.MagicShelf, errMsg string) {
 							<p class="muted">Rule-based collection</p>
 						</div>
 						<form method="post" action={ fmt.Sprintf("/magic-shelves/%d/delete", ms.ID) }>
-							<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+							@CSRFField()
+			<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
 						</form>
 					</div>
 				}
@@ -503,7 +529,8 @@ templ BookdropPage(files []models.BookdropFile, libs []models.Library) {
 						</div>
 						if f.Status == "ready" {
 							<form method="post" action={ fmt.Sprintf("/bookdrop/%d/import", f.ID) } class="chip-row">
-								<select class="select" name="library_id" required>
+								@CSRFField()
+			<select class="select" name="library_id" required>
 									for _, l := range libs {
 										<option value={ fmt.Sprintf("%d", l.ID) }>{ l.Name }</option>
 									}
@@ -512,7 +539,8 @@ templ BookdropPage(files []models.BookdropFile, libs []models.Library) {
 							</form>
 						}
 						<form method="post" action={ fmt.Sprintf("/bookdrop/%d/reject", f.ID) }>
-							<button class="btn btn-ghost btn-sm" type="submit">Reject</button>
+							@CSRFField()
+			<button class="btn btn-ghost btn-sm" type="submit">Reject</button>
 						</form>
 					</div>
 				}
@@ -528,31 +556,33 @@ templ ReaderPage(book models.Book, prog *models.Progress) {
 			<div class="reader-title">{ book.Metadata.DisplayTitle(book.FileName) }</div>
 			<div id="reader-status" class="muted"></div>
 		</header>
+		// Emit progress JSON before reader scripts so #progress-data exists when they run.
+		// Reader scripts use defer so they run after parse (and after head's deferred app.js CSRF wrap).
+		@templ.JSONScript("progress-data", progressData(prog))
 		if book.Format == "epub" {
 			<div id="epub-viewer" class="reader-stage"></div>
-			<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-			<script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
-			<script src="/static/js/readers/epub.js"></script>
+			<script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+			<script defer src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+			<script defer src="/static/js/readers/epub.js"></script>
 		} else if book.Format == "pdf" {
 			<div id="pdf-viewer" class="reader-stage">
 				<iframe title="PDF" src={ fmt.Sprintf("/stream/%d#page=1", book.ID) }></iframe>
 			</div>
-			<script src="/static/js/readers/pdf.js"></script>
+			<script defer src="/static/js/readers/pdf.js"></script>
 		} else if book.Format == "cbz" {
 			<div id="cbz-viewer" class="reader-stage">
 				<button id="cbz-prev" class="btn btn-ghost" type="button">Prev</button>
 				<img id="cbz-page" alt="page"/>
 				<button id="cbz-next" class="btn btn-ghost" type="button">Next</button>
 			</div>
-			<script src="/static/js/readers/cbz.js"></script>
+			<script defer src="/static/js/readers/cbz.js"></script>
 		} else {
 			<div id="audio-viewer" class="reader-stage audio-stage card">
 				<img class="audio-cover" src={ fmt.Sprintf("/covers/%d", book.ID) } alt=""/>
 				<audio id="audio-player" controls src={ fmt.Sprintf("/stream/%d", book.ID) }></audio>
 			</div>
-			<script src="/static/js/readers/audio.js"></script>
+			<script defer src="/static/js/readers/audio.js"></script>
 		}
-		@templ.JSONScript("progress-data", progressData(prog))
 	</div>
 }
 
@@ -565,7 +595,8 @@ templ SettingsPage(me *models.User, users []models.User, opds []models.OPDSUser,
 		<section class="card form-card section">
 			<h2>Theme</h2>
 			<form method="post" action="/settings/theme" class="form-stack">
-				<label>Appearance
+				@CSRFField()
+			<label>Appearance
 					<select class="select" name="theme" onchange="document.documentElement.setAttribute('data-theme', this.value)">
 						for _, t := range themes {
 							<option value={ t } selected?={ t == currentTheme }>{ t }</option>
@@ -588,7 +619,8 @@ templ SettingsPage(me *models.User, users []models.User, opds []models.OPDSUser,
 								}
 							</div>
 							<form method="post" action={ fmt.Sprintf("/settings/users/%d/perms", u.ID) } class="perm-grid">
-								<label class="check"><input type="checkbox" name="is_admin" checked?={ u.IsAdmin }/> Admin</label>
+								@CSRFField()
+			<label class="check"><input type="checkbox" name="is_admin" checked?={ u.IsAdmin }/> Admin</label>
 								<label class="check"><input type="checkbox" name="can_upload" checked?={ u.Permissions.CanUpload }/> Upload</label>
 								<label class="check"><input type="checkbox" name="can_download" checked?={ u.Permissions.CanDownload }/> Download</label>
 								<label class="check"><input type="checkbox" name="can_edit_metadata" checked?={ u.Permissions.CanEditMetadata }/> Edit metadata</label>
@@ -599,7 +631,8 @@ templ SettingsPage(me *models.User, users []models.User, opds []models.OPDSUser,
 					}
 				</div>
 				<form method="post" action="/settings/users" class="form-stack" style="margin-top:1rem">
-					<h3>Add user</h3>
+					@CSRFField()
+			<h3>Add user</h3>
 					<label>Username<input class="input" name="username" required/></label>
 					<label>Display name<input class="input" name="display_name"/></label>
 					<label>Password<input class="input" type="password" name="password" required minlength="8"/></label>
@@ -618,12 +651,14 @@ templ SettingsPage(me *models.User, users []models.User, opds []models.OPDSUser,
 					<div class="lib-card">
 						<code>{ o.Username }</code>
 						<form method="post" action={ fmt.Sprintf("/settings/opds/%d/delete", o.ID) }>
-							<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+							@CSRFField()
+			<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
 						</form>
 					</div>
 				}
 				<form method="post" action="/settings/opds" class="form-stack">
-					<label>Username<input class="input" name="username" required/></label>
+					@CSRFField()
+			<label>Username<input class="input" name="username" required/></label>
 					<label>Password<input class="input" type="password" name="password" required/></label>
 					<button class="btn btn-secondary" type="submit">Create OPDS user</button>
 				</form>

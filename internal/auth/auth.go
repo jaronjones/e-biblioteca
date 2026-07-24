@@ -21,6 +21,7 @@ import (
 const (
 	sessionUserKey = "user_id"
 	ctxUserKey     = ctxKey("user")
+	ctxCSRFKey     = ctxKey("csrf")
 )
 
 type ctxKey string
@@ -113,6 +114,15 @@ func WithUser(ctx context.Context, u *models.User) context.Context {
 func UserFromContext(ctx context.Context) (*models.User, bool) {
 	u, ok := ctx.Value(ctxUserKey).(*models.User)
 	return u, ok && u != nil
+}
+
+func WithCSRF(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, ctxCSRFKey, token)
+}
+
+func CSRFFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxCSRFKey).(string)
+	return v
 }
 
 var ErrUnauthorized = errors.New("unauthorized")

@@ -71,6 +71,7 @@ func (a *App) Routes() http.Handler {
 	r.Use(middleware.RequestID, middleware.RealIP, middleware.Logger, middleware.Recoverer)
 	r.Use(a.Auth.Sessions.LoadAndSave)
 	r.Use(a.loadUser)
+	r.Use(a.attachCSRF)
 	r.Use(a.csrfProtect)
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +147,14 @@ func (a *App) Routes() http.Handler {
 	return r
 }
 
+// attachCSRF puts a session CSRF token into the request context for templates.
+func (a *App) attachCSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := a.Auth.CSRFToken(r.Context())
+		next.ServeHTTP(w, r.WithContext(auth.WithCSRF(r.Context(), tok)))
+	})
+}
+
 // csrfProtect validates tokens on state-changing methods. Safe methods are skipped.
 func (a *App) csrfProtect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,8 +163,6 @@ func (a *App) csrfProtect(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Ensure a token exists for the session (forms/meta can render it).
-		_ = a.Auth.CSRFToken(r.Context())
 		token := r.Header.Get("X-CSRF-Token")
 		if token == "" {
 			ct := r.Header.Get("Content-Type")
@@ -300,31 +307,30 @@ func (a *App) loginGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) loginPost(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
-	if a.loginLocked(ip) {
-		a.render(w, r, "Login", "", components.LoginPage("Too many failed attempts. Try again in a few minutes."))
-		return
-	}
+	// Form may already be parsed by csrfProtect.
 	_ = r.ParseForm()
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
+	ip := clientIP(r)
+	if a.loginLocked(ip, username) {
+		a.render(w, r, "Login", "", components.LoginPage("Too many failed attempts. Try again in a few minutes."))
+		return
+	}
 	u, err := a.Store.GetUserByUsername(r.Context(), username)
 	if err != nil || !auth.CheckPassword(u.PasswordHash, password) {
-		a.recordLoginFailure(ip)
+		a.recordLoginFailure(ip, username)
 		a.render(w, r, "Login", "", components.LoginPage("Invalid username or password."))
 		return
 	}
-	a.clearLoginFailures(ip)
+	a.clearLoginFailures(ip, username)
 	a.Auth.Login(r.Context(), r, w, u.ID)
 	http.SetCookie(w, &http.Cookie{Name: "theme", Value: u.Theme, Path: "/", MaxAge: 365 * 24 * 3600})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// clientIP uses RemoteAddr only. chi RealIP already rewrites it from trusted proxies;
+// re-reading X-Forwarded-For here would let clients spoof the lockout key.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -332,46 +338,72 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func (a *App) loginLocked(ip string) bool {
+const (
+	loginMaxAttempts = 8
+	loginWindow      = 15 * time.Minute
+	loginLockFor     = 15 * time.Minute
+)
+
+func (a *App) loginKeys(ip, username string) []string {
+	keys := []string{"ip:" + ip}
+	if username != "" {
+		keys = append(keys, "user:"+strings.ToLower(username))
+	}
+	return keys
+}
+
+func (a *App) loginLocked(ip, username string) bool {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
-	att, ok := a.loginAttempts[ip]
-	if !ok {
-		return false
-	}
-	if time.Now().Before(att.lockedUntil) {
-		return true
-	}
-	// Reset window after lock expires.
-	if !att.lockedUntil.IsZero() && time.Now().After(att.lockedUntil) {
-		delete(a.loginAttempts, ip)
+	now := time.Now()
+	a.sweepLoginAttemptsLocked(now)
+	for _, key := range a.loginKeys(ip, username) {
+		if att, ok := a.loginAttempts[key]; ok && now.Before(att.lockedUntil) {
+			return true
+		}
 	}
 	return false
 }
 
-func (a *App) recordLoginFailure(ip string) {
-	const maxAttempts = 8
-	const window = 15 * time.Minute
-	const lockFor = 15 * time.Minute
-
+func (a *App) recordLoginFailure(ip, username string) {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
-	att, ok := a.loginAttempts[ip]
 	now := time.Now()
-	if !ok || now.Sub(att.firstAt) > window {
-		a.loginAttempts[ip] = &loginAttempt{count: 1, firstAt: now}
-		return
-	}
-	att.count++
-	if att.count >= maxAttempts {
-		att.lockedUntil = now.Add(lockFor)
+	a.sweepLoginAttemptsLocked(now)
+	for _, key := range a.loginKeys(ip, username) {
+		att, ok := a.loginAttempts[key]
+		if !ok || now.Sub(att.firstAt) > loginWindow {
+			a.loginAttempts[key] = &loginAttempt{count: 1, firstAt: now}
+			continue
+		}
+		att.count++
+		if att.count >= loginMaxAttempts {
+			att.lockedUntil = now.Add(loginLockFor)
+		}
 	}
 }
 
-func (a *App) clearLoginFailures(ip string) {
+func (a *App) clearLoginFailures(ip, username string) {
 	a.loginMu.Lock()
-	delete(a.loginAttempts, ip)
-	a.loginMu.Unlock()
+	defer a.loginMu.Unlock()
+	for _, key := range a.loginKeys(ip, username) {
+		delete(a.loginAttempts, key)
+	}
+	a.sweepLoginAttemptsLocked(time.Now())
+}
+
+func (a *App) sweepLoginAttemptsLocked(now time.Time) {
+	for k, att := range a.loginAttempts {
+		if !att.lockedUntil.IsZero() {
+			if now.After(att.lockedUntil) {
+				delete(a.loginAttempts, k)
+			}
+			continue
+		}
+		if now.Sub(att.firstAt) > loginWindow {
+			delete(a.loginAttempts, k)
+		}
+	}
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
@@ -481,12 +513,10 @@ func (a *App) bookDelete(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) bookDownload(w http.ResponseWriter, r *http.Request) {
 	u := a.currentUser(r)
-	// OPDS may use basic auth without session user
-	if u != nil {
-		if err := auth.RequirePerm(u, func(p models.Permissions) bool { return p.CanDownload }); err != nil {
-			http.Error(w, "forbidden", 403)
-			return
-		}
+	// Session users and OPDS (linked user attached by opdsBasicAuth) need CanDownload.
+	if err := auth.RequirePerm(u, func(p models.Permissions) bool { return p.CanDownload }); err != nil {
+		http.Error(w, "forbidden", 403)
+		return
 	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	book, err := a.Store.GetBook(r.Context(), id)
@@ -540,11 +570,50 @@ func (a *App) bookLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Keep results server-side; client only posts an index (SSRF mitigation).
-	a.lookupMu.Lock()
-	a.lookupCache[id] = lookupEntry{results: results, expires: time.Now().Add(30 * time.Minute)}
-	a.lookupMu.Unlock()
+	a.putLookupCache(id, results)
 	if err := components.LookupResults(id, results).Render(r.Context(), w); err != nil {
 		log.Printf("lookup results render: %v", err)
+	}
+}
+
+const maxLookupCacheEntries = 256
+
+func (a *App) putLookupCache(bookID int64, results []metadata.LookupResult) {
+	a.lookupMu.Lock()
+	defer a.lookupMu.Unlock()
+	now := time.Now()
+	a.sweepLookupCacheLocked(now)
+	// Cap size so an attacker cannot grow the map without bound.
+	for len(a.lookupCache) >= maxLookupCacheEntries {
+		for k := range a.lookupCache {
+			delete(a.lookupCache, k)
+			break
+		}
+	}
+	a.lookupCache[bookID] = lookupEntry{results: results, expires: now.Add(30 * time.Minute)}
+}
+
+func (a *App) getLookupCache(bookID int64) (lookupEntry, bool) {
+	a.lookupMu.Lock()
+	defer a.lookupMu.Unlock()
+	now := time.Now()
+	a.sweepLookupCacheLocked(now)
+	entry, ok := a.lookupCache[bookID]
+	if !ok {
+		return lookupEntry{}, false
+	}
+	if now.After(entry.expires) {
+		delete(a.lookupCache, bookID)
+		return lookupEntry{}, false
+	}
+	return entry, true
+}
+
+func (a *App) sweepLookupCacheLocked(now time.Time) {
+	for k, e := range a.lookupCache {
+		if now.After(e.expires) {
+			delete(a.lookupCache, k)
+		}
 	}
 }
 
@@ -561,21 +630,12 @@ func (a *App) bookApplyLookup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid lookup index", 400)
 		return
 	}
-	a.lookupMu.Lock()
-	entry, ok := a.lookupCache[id]
-	if ok && time.Now().After(entry.expires) {
-		delete(a.lookupCache, id)
-		ok = false
-	}
-	var res metadata.LookupResult
-	if ok && idx < len(entry.results) {
-		res = entry.results[idx]
-	}
-	a.lookupMu.Unlock()
+	entry, ok := a.getLookupCache(id)
 	if !ok || idx >= len(entry.results) {
 		http.Error(w, "lookup expired; run lookup again", 400)
 		return
 	}
+	res := entry.results[idx]
 	authors := res.Authors
 	cats := res.Categories
 	_ = a.Store.UpdateBookMetadata(r.Context(), id, res.Title, res.Subtitle, res.Description, res.Publisher, "", res.ISBN13, authors, cats)
@@ -1148,6 +1208,12 @@ func (a *App) opdsBasicAuth(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
+		// Attach linked app user so CanDownload (and future perms) apply on OPDS routes.
+		if ou.UserID != nil {
+			if u, err := a.Store.GetUserByID(r.Context(), *ou.UserID); err == nil {
+				r = r.WithContext(auth.WithUser(r.Context(), u))
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -1271,7 +1337,7 @@ type opdsContent struct {
 }
 
 func writeOPDS(w http.ResponseWriter, feed opdsFeed) {
-	w.Header().Set("Content-Type", "application/atom+xml;profile=opds-catalog")
+	// Callers set Content-Type (including OPDS kind=navigation|acquisition); do not overwrite.
 	_, _ = w.Write([]byte(xml.Header))
 	enc := xml.NewEncoder(w)
 	enc.Indent("", "  ")

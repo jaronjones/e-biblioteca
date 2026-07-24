@@ -12,7 +12,7 @@ document.addEventListener('submit', (e) => {
     return meta && meta.content ? meta.content : '';
   }
 
-  // Inject CSRF token into POST forms from <meta name="csrf-token">.
+  // Keep server-rendered csrf_token fields in sync; inject only if missing (fallback).
   function ensureField(form) {
     if (!form || (form.method || 'get').toLowerCase() !== 'post') return;
     const t = token();
@@ -30,7 +30,7 @@ document.addEventListener('submit', (e) => {
   document.querySelectorAll('form').forEach(ensureField);
   document.addEventListener('submit', (e) => ensureField(e.target), true);
 
-  // Attach token to fetch/XHR/htmx POSTs (readers, progress, etc.).
+  // Attach token to fetch/htmx POSTs (readers, progress, etc.).
   const origFetch = window.fetch.bind(window);
   window.fetch = function (input, init) {
     init = init ? { ...init } : {};

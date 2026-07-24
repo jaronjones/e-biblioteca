@@ -39,6 +39,7 @@ templ Layout(title string, nav NavData, body templ.Component) {
 						<div class="side-footer">
 							<div class="muted">{ nav.User }</div>
 							<form method="post" action="/logout">
+								@CSRFField()
 								<button class="btn btn-ghost btn-sm" type="submit">Log out</button>
 							</form>
 						</div>

@@ -295,7 +295,7 @@ func googleBooksSearch(ctx context.Context, title, author, isbn string) ([]Looku
 		if r.CoverURL == "" {
 			r.CoverURL = v.ImageLinks.Small
 		}
-		r.CoverURL = strings.Replace(r.CoverURL, "http://", "https://", 1)
+		r.CoverURL = upgradeToHTTPS(r.CoverURL)
 		for _, id := range v.IndustryIdentifiers {
 			if id.Type == "ISBN_13" {
 				r.ISBN13 = id.Identifier
@@ -316,12 +316,22 @@ func firstN(ss []string, n int) []string {
 	return ss[:n]
 }
 
+// upgradeToHTTPS rewrites only the URL scheme from http to https.
+func upgradeToHTTPS(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" {
+		return raw
+	}
+	u.Scheme = "https"
+	return u.String()
+}
+
 func DownloadCover(ctx context.Context, coverURL string) ([]byte, string, error) {
 	if coverURL == "" {
 		return nil, "", fmt.Errorf("empty url")
 	}
-	// Normalize common http:// covers to https before allowlist check.
-	coverURL = strings.Replace(coverURL, "http://", "https://", 1)
+	// Normalize common http covers to https before allowlist check.
+	coverURL = upgradeToHTTPS(coverURL)
 	if err := validateCoverURL(coverURL); err != nil {
 		return nil, "", err
 	}
