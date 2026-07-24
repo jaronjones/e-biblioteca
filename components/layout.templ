@@ -1,0 +1,61 @@
+package components
+
+templ Layout(title string, nav NavData, body templ.Component) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme={ nav.Theme }>
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ title } · e-biblioteca</title>
+			<link rel="stylesheet" href="/static/css/themes.css"/>
+			<link rel="stylesheet" href="/static/css/base.css"/>
+			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+			<script defer src="/static/js/app.js"></script>
+		</head>
+		<body class="app-body">
+			if nav.User != "" {
+				<div class="app-shell">
+					<aside class="sidebar">
+						<div class="brand">
+							<a href="/">e-biblioteca</a>
+						</div>
+						<nav class="side-nav">
+							<a class={ navClass(nav.Active, "dashboard") } href="/">Dashboard</a>
+							<a class={ navClass(nav.Active, "books") } href="/books">Books</a>
+							<a class={ navClass(nav.Active, "libraries") } href="/libraries">Libraries</a>
+							<a class={ navClass(nav.Active, "shelves") } href="/shelves">Shelves</a>
+							<a class={ navClass(nav.Active, "magic") } href="/magic-shelves">Magic shelves</a>
+							<a class={ navClass(nav.Active, "bookdrop") } href="/bookdrop">
+								BookDrop
+								if nav.BookdropCount > 0 {
+									<span class="badge badge-warning">{ nav.BookdropCount }</span>
+								}
+							</a>
+							<a class={ navClass(nav.Active, "settings") } href="/settings">Settings</a>
+						</nav>
+						<div class="side-footer">
+							<div class="muted">{ nav.User }</div>
+							<form method="post" action="/logout">
+								<button class="btn btn-ghost btn-sm" type="submit">Log out</button>
+							</form>
+						</div>
+					</aside>
+					<main class="main">
+						@body
+					</main>
+				</div>
+			} else {
+				<main class="auth-main">
+					@body
+				</main>
+			}
+		</body>
+	</html>
+}
+
+func navClass(active, name string) string {
+	if active == name {
+		return "nav-link active"
+	}
+	return "nav-link"
+}

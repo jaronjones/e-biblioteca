@@ -1,0 +1,611 @@
+package components
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/jjones/e-biblioteca/internal/models"
+	"github.com/jjones/e-biblioteca/internal/service/metadata"
+)
+
+templ SetupPage(errMsg string) {
+	<div class="auth-card card">
+		<h1>Welcome to e-biblioteca</h1>
+		<p class="muted">Create your admin account to get started.</p>
+		if errMsg != "" {
+			<div class="alert alert-error">{ errMsg }</div>
+		}
+		<form method="post" action="/setup" class="form-stack">
+			<label>Username<input class="input" name="username" required autocomplete="username"/></label>
+			<label>Display name<input class="input" name="display_name" autocomplete="name"/></label>
+			<label>Password<input class="input" type="password" name="password" required minlength="8" autocomplete="new-password"/></label>
+			<button class="btn btn-primary" type="submit">Create admin</button>
+		</form>
+	</div>
+}
+
+templ LoginPage(errMsg string) {
+	<div class="auth-card card">
+		<h1>Sign in</h1>
+		<p class="muted">Your personal digital library.</p>
+		if errMsg != "" {
+			<div class="alert alert-error">{ errMsg }</div>
+		}
+		<form method="post" action="/login" class="form-stack">
+			<label>Username<input class="input" name="username" required autocomplete="username"/></label>
+			<label>Password<input class="input" type="password" name="password" required autocomplete="current-password"/></label>
+			<button class="btn btn-primary" type="submit">Sign in</button>
+		</form>
+	</div>
+}
+
+templ DashboardPage(d models.DashboardData) {
+	<div class="page">
+		<header class="page-header">
+			<div>
+				<h1>Dashboard</h1>
+				<p class="muted">Pick up where you left off.</p>
+			</div>
+		</header>
+		<div class="stats-row">
+			<div class="stat card"><div class="stat-label">Books</div><div class="stat-value">{ fmt.Sprintf("%d", d.BookCount) }</div></div>
+			<div class="stat card"><div class="stat-label">Libraries</div><div class="stat-value">{ fmt.Sprintf("%d", d.LibraryCount) }</div></div>
+			<div class="stat card"><div class="stat-label">BookDrop ready</div><div class="stat-value">{ fmt.Sprintf("%d", d.BookdropReady) }</div></div>
+		</div>
+		if len(d.InProgress) > 0 {
+			<section class="section">
+				<h2>Continue reading</h2>
+				@BookGrid(d.InProgress)
+			</section>
+		}
+		<section class="section">
+			<h2>Recently added</h2>
+			if len(d.RecentlyAdded) == 0 {
+				<div class="empty card">
+					<p>No books yet. Create a library and scan, or upload a file.</p>
+					<a class="btn btn-primary" href="/libraries">Set up a library</a>
+				</div>
+			} else {
+				@BookGrid(d.RecentlyAdded)
+			}
+		</section>
+	</div>
+}
+
+templ BooksPage(books []models.Book, libs []models.Library, q, format string, libID int64, page, pages, total int) {
+	<div class="page">
+		<header class="page-header">
+			<div>
+				<h1>Books</h1>
+				<p class="muted">{ fmt.Sprintf("%d titles", total) }</p>
+			</div>
+		</header>
+		<form class="toolbar" method="get" action="/books" hx-get="/books" hx-target="#book-grid" hx-trigger="keyup changed delay:300ms from:input[name=q], change from:select" hx-push-url="true">
+			<input class="input" type="search" name="q" value={ q } placeholder="Search titles, series…"/>
+			<select class="select" name="format">
+				<option value="">All formats</option>
+				for _, f := range []string{"epub", "pdf", "cbz", "mp3", "m4b", "m4a", "opus"} {
+					<option value={ f } selected?={ format == f }>{ strings.ToUpper(f) }</option>
+				}
+			</select>
+			<select class="select" name="library">
+				<option value="">All libraries</option>
+				for _, l := range libs {
+					<option value={ fmt.Sprintf("%d", l.ID) } selected?={ libID == l.ID }>{ l.Name }</option>
+				}
+			</select>
+			<button class="btn btn-primary" type="submit">Search</button>
+		</form>
+		<div id="book-grid">
+			@BookGrid(books)
+		</div>
+		if pages > 1 {
+			<div class="pagination">
+				if page > 1 {
+					<a class="btn btn-ghost" href={ fmt.Sprintf("/books?q=%s&format=%s&library=%d&page=%d", q, format, libID, page-1) }>Previous</a>
+				}
+				<span class="muted">Page { fmt.Sprintf("%d / %d", page, pages) }</span>
+				if page < pages {
+					<a class="btn btn-ghost" href={ fmt.Sprintf("/books?q=%s&format=%s&library=%d&page=%d", q, format, libID, page+1) }>Next</a>
+				}
+			</div>
+		}
+	</div>
+}
+
+templ BookGrid(books []models.Book) {
+	if len(books) == 0 {
+		<div class="empty card"><p>No books match.</p></div>
+	} else {
+		<div class="book-grid">
+			for _, b := range books {
+				<a class="book-card" href={ fmt.Sprintf("/books/%d", b.ID) }>
+					<div class="cover">
+						<img src={ fmt.Sprintf("/covers/%d", b.ID) } alt="" loading="lazy"/>
+						<span class="format-pill">{ strings.ToUpper(b.Format) }</span>
+					</div>
+					<div class="book-meta">
+						<div class="book-title">{ b.Metadata.DisplayTitle(b.FileName) }</div>
+						if len(b.Authors) > 0 {
+							<div class="book-authors muted">{ strings.Join(b.Authors, ", ") }</div>
+						}
+					</div>
+				</a>
+			}
+		</div>
+	}
+}
+
+templ BookDetailPage(book models.Book, prog *models.Progress, shelves []models.Shelf, user *models.User) {
+	<div class="page">
+		<div class="detail-layout">
+			<div class="detail-cover card">
+				<img src={ fmt.Sprintf("/covers/%d", book.ID) } alt=""/>
+				<div class="detail-actions">
+					<a class="btn btn-primary" href={ fmt.Sprintf("/read/%d", book.ID) }>
+						if book.Format == "mp3" || book.Format == "m4b" || book.Format == "m4a" || book.Format == "opus" {
+							Listen
+						} else {
+							Read
+						}
+					</a>
+					if user != nil && (user.IsAdmin || user.Permissions.CanDownload) {
+						<a class="btn btn-ghost" href={ fmt.Sprintf("/books/%d/download", book.ID) }>Download</a>
+					}
+					if user != nil && (user.IsAdmin || user.Permissions.CanEditMetadata) {
+						<a class="btn btn-ghost" href={ fmt.Sprintf("/books/%d/edit", book.ID) }>Edit metadata</a>
+					}
+				</div>
+			</div>
+			<div class="detail-body">
+				<p class="eyebrow">{ strings.ToUpper(book.Format) } · { book.LibraryName }</p>
+				<h1>{ book.Metadata.DisplayTitle(book.FileName) }</h1>
+				if len(book.Authors) > 0 {
+					<p class="authors">{ strings.Join(book.Authors, ", ") }</p>
+				}
+				if prog != nil && prog.Percent > 0 {
+					<div class="progress-wrap">
+						<div class="progress-bar"><div class="progress-fill" style={ fmt.Sprintf("width:%.1f%%", prog.Percent) }></div></div>
+						<span class="muted">{ fmt.Sprintf("%.0f%% · %s", prog.Percent, prog.Status) }</span>
+					</div>
+				}
+				if book.Metadata.Description != nil && *book.Metadata.Description != "" {
+					<section class="section">
+						<h2>Description</h2>
+						<p class="prose">{ *book.Metadata.Description }</p>
+					</section>
+				}
+				<section class="section meta-grid">
+					if book.Metadata.SeriesName != nil && *book.Metadata.SeriesName != "" {
+						<div><span class="muted">Series</span><div>{ *book.Metadata.SeriesName }</div></div>
+					}
+					if book.Metadata.Publisher != nil && *book.Metadata.Publisher != "" {
+						<div><span class="muted">Publisher</span><div>{ *book.Metadata.Publisher }</div></div>
+					}
+					if book.Metadata.ISBN13 != nil && *book.Metadata.ISBN13 != "" {
+						<div><span class="muted">ISBN-13</span><div>{ *book.Metadata.ISBN13 }</div></div>
+					}
+					if len(book.Categories) > 0 {
+						<div><span class="muted">Categories</span><div>{ strings.Join(book.Categories, ", ") }</div></div>
+					}
+				</section>
+				if len(shelves) > 0 {
+					<section class="section">
+						<h2>Add to shelf</h2>
+						<div class="chip-row">
+							for _, sh := range shelves {
+								<form method="post" action={ fmt.Sprintf("/shelves/%d/books/%d", sh.ID, book.ID) }>
+									<button class="btn btn-ghost btn-sm" type="submit">{ sh.Name }</button>
+								</form>
+							}
+						</div>
+					</section>
+				}
+				if user != nil && (user.IsAdmin || user.Permissions.CanEditMetadata) {
+					<section class="section">
+						<h2>Metadata lookup</h2>
+						<button class="btn btn-secondary" type="button" hx-post={ fmt.Sprintf("/books/%d/lookup", book.ID) } hx-target="#lookup-results">Search providers</button>
+						<div id="lookup-results"></div>
+					</section>
+				}
+			</div>
+		</div>
+	</div>
+}
+
+templ BookEditPage(book models.Book, errMsg string) {
+	<div class="page">
+		<header class="page-header"><h1>Edit metadata</h1></header>
+		if errMsg != "" {
+			<div class="alert alert-error">{ errMsg }</div>
+		}
+		<form method="post" action={ fmt.Sprintf("/books/%d/edit", book.ID) } class="form-stack card form-card">
+			<label>Title<input class="input" name="title" value={ strPtr(book.Metadata.Title, book.FileName) }/></label>
+			<label>Subtitle<input class="input" name="subtitle" value={ strPtr(book.Metadata.Subtitle, "") }/></label>
+			<label>Authors (comma separated)<input class="input" name="authors" value={ strings.Join(book.Authors, ", ") }/></label>
+			<label>Series<input class="input" name="series" value={ strPtr(book.Metadata.SeriesName, "") }/></label>
+			<label>Publisher<input class="input" name="publisher" value={ strPtr(book.Metadata.Publisher, "") }/></label>
+			<label>ISBN-13<input class="input" name="isbn13" value={ strPtr(book.Metadata.ISBN13, "") }/></label>
+			<label>Categories (comma separated)<input class="input" name="categories" value={ strings.Join(book.Categories, ", ") }/></label>
+			<label>Description<textarea class="textarea" name="description" rows="8">{ strPtr(book.Metadata.Description, "") }</textarea></label>
+			<div class="form-actions">
+				<button class="btn btn-primary" type="submit">Save</button>
+				<a class="btn btn-ghost" href={ fmt.Sprintf("/books/%d", book.ID) }>Cancel</a>
+			</div>
+		</form>
+	</div>
+}
+
+func strPtr(p *string, fallback string) string {
+	if p != nil {
+		return *p
+	}
+	return fallback
+}
+
+templ LookupResults(bookID int64, results []metadata.LookupResult) {
+	if len(results) == 0 {
+		<p class="muted">No results found.</p>
+	} else {
+		<div class="lookup-list">
+			for _, r := range results {
+				<div class="lookup-item card">
+					<div>
+						<strong>{ r.Title }</strong>
+						<div class="muted">{ r.Source } · { strings.Join(r.Authors, ", ") }</div>
+						if r.Publisher != "" {
+							<div class="muted">{ r.Publisher }</div>
+						}
+					</div>
+					<form method="post" action={ fmt.Sprintf("/books/%d/apply-lookup", bookID) }>
+						<input type="hidden" name="payload" value={ lookupJSON(r) }/>
+						<button class="btn btn-sm btn-primary" type="submit">Apply</button>
+					</form>
+				</div>
+			}
+		</div>
+	}
+}
+
+func lookupJSON(r metadata.LookupResult) string {
+	b, _ := json.Marshal(r)
+	return string(b)
+}
+
+func progressJSON(p *models.Progress) string {
+	if p == nil {
+		return `{"percent":0,"position":{},"status":"unread"}`
+	}
+	b, _ := json.Marshal(map[string]any{
+		"percent": p.Percent,
+		"position": json.RawMessage(p.Position),
+		"status": p.Status,
+	})
+	return string(b)
+}
+
+templ LibrariesPage(libs []models.Library, booksDir, errMsg string) {
+	<div class="page">
+		<header class="page-header">
+			<div>
+				<h1>Libraries</h1>
+				<p class="muted">Paths are relative to { booksDir } or absolute.</p>
+			</div>
+		</header>
+		if errMsg != "" {
+			<div class="alert alert-error">{ errMsg }</div>
+		}
+		<div class="two-col">
+			<section class="card form-card">
+				<h2>New library</h2>
+				<form method="post" action="/libraries" class="form-stack">
+					<label>Name<input class="input" name="name" required/></label>
+					<label>Path<input class="input" name="path" placeholder="fiction" required/></label>
+					<label>Icon<input class="input" name="icon" value="book"/></label>
+					<label class="check"><input type="checkbox" name="watch"/> Watch for new files</label>
+					<button class="btn btn-primary" type="submit">Create</button>
+				</form>
+			</section>
+			<section class="list-stack">
+				for _, l := range libs {
+					<div class="card lib-card">
+						<div>
+							<h3>{ l.Name }</h3>
+							<p class="muted">{ fmt.Sprintf("%d books", l.BookCount) }</p>
+							for _, p := range l.Paths {
+								<code class="path">{ p.Path }</code>
+							}
+						</div>
+						<div class="chip-row">
+							<form method="post" action={ fmt.Sprintf("/libraries/%d/scan", l.ID) }>
+								<button class="btn btn-primary btn-sm" type="submit">Scan</button>
+							</form>
+							<form method="post" action={ fmt.Sprintf("/libraries/%d/delete", l.ID) } onsubmit="return confirm('Delete library?')">
+								<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+							</form>
+							<a class="btn btn-ghost btn-sm" href={ fmt.Sprintf("/books?library=%d", l.ID) }>Browse</a>
+						</div>
+					</div>
+				}
+			</section>
+		</div>
+		<section class="card form-card section">
+			<h2>Upload a book</h2>
+			<form method="post" action="/upload" enctype="multipart/form-data" class="form-stack">
+				<label>Library
+					<select class="select" name="library_id" required>
+						for _, l := range libs {
+							<option value={ fmt.Sprintf("%d", l.ID) }>{ l.Name }</option>
+						}
+					</select>
+				</label>
+				<label>File<input class="input" type="file" name="file" required/></label>
+				<button class="btn btn-secondary" type="submit">Upload</button>
+			</form>
+		</section>
+	</div>
+}
+
+templ ShelvesPage(shelves []models.Shelf, errMsg string) {
+	<div class="page">
+		<header class="page-header"><h1>Shelves</h1></header>
+		if errMsg != "" {
+			<div class="alert alert-error">{ errMsg }</div>
+		}
+		<div class="two-col">
+			<form method="post" action="/shelves" class="card form-card form-stack">
+				<h2>New shelf</h2>
+				<label>Name<input class="input" name="name" required/></label>
+				<label>Icon<input class="input" name="icon" value="bookmark"/></label>
+				<button class="btn btn-primary" type="submit">Create</button>
+			</form>
+			<div class="list-stack">
+				for _, sh := range shelves {
+					<div class="card lib-card">
+						<div>
+							<a href={ fmt.Sprintf("/shelves/%d", sh.ID) }><h3>{ sh.Name }</h3></a>
+							<p class="muted">{ fmt.Sprintf("%d books", sh.BookCount) }</p>
+						</div>
+						<form method="post" action={ fmt.Sprintf("/shelves/%d/delete", sh.ID) }>
+							<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+						</form>
+					</div>
+				}
+			</div>
+		</div>
+	</div>
+}
+
+templ ShelfDetailPage(id int64, books []models.Book) {
+	<div class="page">
+		<header class="page-header">
+			<div>
+				<a class="muted" href="/shelves">← Shelves</a>
+				<h1>Shelf</h1>
+			</div>
+		</header>
+		@BookGrid(books)
+	</div>
+}
+
+templ MagicShelvesPage(list []models.MagicShelf, errMsg string) {
+	<div class="page">
+		<header class="page-header">
+			<div>
+				<h1>Magic shelves</h1>
+				<p class="muted">Dynamic collections based on rules.</p>
+			</div>
+		</header>
+		if errMsg != "" {
+			<div class="alert alert-error">{ errMsg }</div>
+		}
+		<div class="two-col">
+			<form method="post" action="/magic-shelves" class="card form-card form-stack">
+				<h2>New magic shelf</h2>
+				<label>Name<input class="input" name="name" required/></label>
+				<label>Author contains<input class="input" name="author"/></label>
+				<label>Category contains<input class="input" name="category"/></label>
+				<label>Series contains<input class="input" name="series"/></label>
+				<label>Format
+					<select class="select" name="format">
+						<option value="">Any</option>
+						for _, f := range []string{"epub", "pdf", "cbz", "mp3", "m4b"} {
+							<option value={ f }>{ f }</option>
+						}
+					</select>
+				</label>
+				<label>Read status
+					<select class="select" name="status">
+						<option value="">Any</option>
+						<option value="unread">unread</option>
+						<option value="reading">reading</option>
+						<option value="finished">finished</option>
+					</select>
+				</label>
+				<label>Search query<input class="input" name="query"/></label>
+				<button class="btn btn-primary" type="submit">Create</button>
+			</form>
+			<div class="list-stack">
+				for _, ms := range list {
+					<div class="card lib-card">
+						<div>
+							<a href={ fmt.Sprintf("/magic-shelves/%d", ms.ID) }><h3>{ ms.Name }</h3></a>
+							<p class="muted">Rule-based collection</p>
+						</div>
+						<form method="post" action={ fmt.Sprintf("/magic-shelves/%d/delete", ms.ID) }>
+							<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+						</form>
+					</div>
+				}
+			</div>
+		</div>
+	</div>
+}
+
+templ MagicDetailPage(ms models.MagicShelf, books []models.Book) {
+	<div class="page">
+		<header class="page-header">
+			<div>
+				<a class="muted" href="/magic-shelves">← Magic shelves</a>
+				<h1>{ ms.Name }</h1>
+			</div>
+		</header>
+		@BookGrid(books)
+	</div>
+}
+
+templ BookdropPage(files []models.BookdropFile, libs []models.Library) {
+	<div class="page">
+		<header class="page-header">
+			<div>
+				<h1>BookDrop</h1>
+				<p class="muted">Drop files into the bookdrop folder for review and import.</p>
+			</div>
+		</header>
+		if len(files) == 0 {
+			<div class="empty card"><p>Nothing waiting. Drop EPUB, PDF, CBZ, or audio into the BookDrop directory.</p></div>
+		} else {
+			<div class="list-stack">
+				for _, f := range files {
+					<div class="card lib-card">
+						<div>
+							<strong>{ f.FileName }</strong>
+							if f.Title != "" {
+								<div>{ f.Title }</div>
+							}
+							if f.Authors != "" {
+								<div class="muted">{ f.Authors }</div>
+							}
+							<span class={ "badge status-" + f.Status }>{ f.Status }</span>
+						</div>
+						if f.Status == "ready" {
+							<form method="post" action={ fmt.Sprintf("/bookdrop/%d/import", f.ID) } class="chip-row">
+								<select class="select" name="library_id" required>
+									for _, l := range libs {
+										<option value={ fmt.Sprintf("%d", l.ID) }>{ l.Name }</option>
+									}
+								</select>
+								<button class="btn btn-primary btn-sm" type="submit">Import</button>
+							</form>
+						}
+						<form method="post" action={ fmt.Sprintf("/bookdrop/%d/reject", f.ID) }>
+							<button class="btn btn-ghost btn-sm" type="submit">Reject</button>
+						</form>
+					</div>
+				}
+			</div>
+		}
+	</div>
+}
+
+templ ReaderPage(book models.Book, prog *models.Progress) {
+	<div class="reader-page" data-book-id={ fmt.Sprintf("%d", book.ID) } data-format={ book.Format }>
+		<header class="reader-bar">
+			<a class="btn btn-ghost btn-sm" href={ fmt.Sprintf("/books/%d", book.ID) }>← Back</a>
+			<div class="reader-title">{ book.Metadata.DisplayTitle(book.FileName) }</div>
+			<div id="reader-status" class="muted"></div>
+		</header>
+		if book.Format == "epub" {
+			<div id="epub-viewer" class="reader-stage"></div>
+			<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+			<script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+			<script src="/static/js/readers/epub.js"></script>
+		} else if book.Format == "pdf" {
+			<div id="pdf-viewer" class="reader-stage">
+				<iframe title="PDF" src={ fmt.Sprintf("/stream/%d#page=1", book.ID) }></iframe>
+			</div>
+			<script src="/static/js/readers/pdf.js"></script>
+		} else if book.Format == "cbz" {
+			<div id="cbz-viewer" class="reader-stage">
+				<button id="cbz-prev" class="btn btn-ghost" type="button">Prev</button>
+				<img id="cbz-page" alt="page"/>
+				<button id="cbz-next" class="btn btn-ghost" type="button">Next</button>
+			</div>
+			<script src="/static/js/readers/cbz.js"></script>
+		} else {
+			<div id="audio-viewer" class="reader-stage audio-stage card">
+				<img class="audio-cover" src={ fmt.Sprintf("/covers/%d", book.ID) } alt=""/>
+				<audio id="audio-player" controls src={ fmt.Sprintf("/stream/%d", book.ID) }></audio>
+			</div>
+			<script src="/static/js/readers/audio.js"></script>
+		}
+		<script type="application/json" id="progress-data">{ progressJSON(prog) }</script>
+	</div>
+}
+
+templ SettingsPage(me *models.User, users []models.User, opds []models.OPDSUser, libs []models.Library, themes []string, currentTheme, errMsg string) {
+	<div class="page">
+		<header class="page-header"><h1>Settings</h1></header>
+		if errMsg != "" {
+			<div class="alert alert-error">{ errMsg }</div>
+		}
+		<section class="card form-card section">
+			<h2>Theme</h2>
+			<form method="post" action="/settings/theme" class="form-stack">
+				<label>Appearance
+					<select class="select" name="theme" onchange="document.documentElement.setAttribute('data-theme', this.value)">
+						for _, t := range themes {
+							<option value={ t } selected?={ t == currentTheme }>{ t }</option>
+						}
+					</select>
+				</label>
+				<button class="btn btn-primary" type="submit">Save theme</button>
+			</form>
+		</section>
+		if me != nil && me.IsAdmin {
+			<section class="card form-card section">
+				<h2>Users</h2>
+				<div class="list-stack">
+					for _, u := range users {
+						<div class="lib-card">
+							<div>
+								<strong>{ u.Username }</strong>
+								if u.IsAdmin {
+									<span class="badge">admin</span>
+								}
+							</div>
+							<form method="post" action={ fmt.Sprintf("/settings/users/%d/perms", u.ID) } class="perm-grid">
+								<label class="check"><input type="checkbox" name="is_admin" checked?={ u.IsAdmin }/> Admin</label>
+								<label class="check"><input type="checkbox" name="can_upload" checked?={ u.Permissions.CanUpload }/> Upload</label>
+								<label class="check"><input type="checkbox" name="can_download" checked?={ u.Permissions.CanDownload }/> Download</label>
+								<label class="check"><input type="checkbox" name="can_edit_metadata" checked?={ u.Permissions.CanEditMetadata }/> Edit metadata</label>
+								<label class="check"><input type="checkbox" name="can_manage_library" checked?={ u.Permissions.CanManageLibrary }/> Manage library</label>
+								<button class="btn btn-sm btn-secondary" type="submit">Update</button>
+							</form>
+						</div>
+					}
+				</div>
+				<form method="post" action="/settings/users" class="form-stack" style="margin-top:1rem">
+					<h3>Add user</h3>
+					<label>Username<input class="input" name="username" required/></label>
+					<label>Display name<input class="input" name="display_name"/></label>
+					<label>Password<input class="input" type="password" name="password" required minlength="8"/></label>
+					<label class="check"><input type="checkbox" name="can_download" checked/> Download</label>
+					<label class="check"><input type="checkbox" name="can_upload"/> Upload</label>
+					<label class="check"><input type="checkbox" name="can_edit_metadata"/> Edit metadata</label>
+					<label class="check"><input type="checkbox" name="can_manage_library"/> Manage library</label>
+					<label class="check"><input type="checkbox" name="is_admin"/> Admin</label>
+					<button class="btn btn-primary" type="submit">Create user</button>
+				</form>
+			</section>
+			<section class="card form-card section">
+				<h2>OPDS</h2>
+				<p class="muted">Basic-auth credentials for OPDS clients. Catalog: /opds</p>
+				for _, o := range opds {
+					<div class="lib-card">
+						<code>{ o.Username }</code>
+						<form method="post" action={ fmt.Sprintf("/settings/opds/%d/delete", o.ID) }>
+							<button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+						</form>
+					</div>
+				}
+				<form method="post" action="/settings/opds" class="form-stack">
+					<label>Username<input class="input" name="username" required/></label>
+					<label>Password<input class="input" type="password" name="password" required/></label>
+					<button class="btn btn-secondary" type="submit">Create OPDS user</button>
+				</form>
+			</section>
+		}
+	</div>
+}

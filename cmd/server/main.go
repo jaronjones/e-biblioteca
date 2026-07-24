@@ -10,8 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jjones/e-biblioteca/internal/auth"
 	"github.com/jjones/e-biblioteca/internal/config"
 	"github.com/jjones/e-biblioteca/internal/db"
+	"github.com/jjones/e-biblioteca/internal/http/handlers"
+	"github.com/jjones/e-biblioteca/internal/service/bookdrop"
+	"github.com/jjones/e-biblioteca/internal/service/scanner"
+	"github.com/jjones/e-biblioteca/internal/store"
 )
 
 func main() {
@@ -23,6 +28,8 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	// Wait for DB a bit (docker compose)
 	var poolErr error
 	pool, poolErr := db.Connect(ctx, cfg.DatabaseURL)
 	for i := 0; i < 30 && poolErr != nil; i++ {
@@ -39,36 +46,44 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<!doctype html><html data-theme="dark"><head>
-<link rel="stylesheet" href="/static/css/themes.css"/>
-<link rel="stylesheet" href="/static/css/base.css"/>
-<title>e-biblioteca</title></head>
-<body class="app-body auth-main"><div class="auth-card card">
-<h1>e-biblioteca</h1>
-<p class="muted">Scaffold is live. Auth and catalog land in later phases.</p>
-<p><code>/healthz</code> is ready.</p>
-</div></body></html>`))
-	})
+	st := store.New(pool)
+	am := auth.NewManager(pool, cfg.SecureCookies)
+	scn := &scanner.Scanner{Store: st, DataDir: cfg.DataDir, BooksDir: cfg.BooksDir}
+	bd := bookdrop.New(st, cfg.BookdropDir, cfg.DataDir)
 
-	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	bg, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := bd.Start(bg); err != nil {
+		log.Printf("bookdrop watcher: %v", err)
+	}
+
+	app := &handlers.App{
+		Cfg:      cfg,
+		Store:    st,
+		Auth:     am,
+		Scanner:  scn,
+		Bookdrop: bd,
+	}
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.HTTPPort,
+		Handler:           app.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
 	go func() {
 		log.Printf("e-biblioteca listening on :%s", cfg.HTTPPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
 	}()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	log.Printf("shutting down")
+	cancel()
+	shutdownCtx, c := context.WithTimeout(context.Background(), 10*time.Second)
+	defer c()
 	_ = srv.Shutdown(shutdownCtx)
 }
