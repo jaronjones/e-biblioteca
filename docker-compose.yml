@@ -24,7 +24,6 @@ services:
       DATA_DIR: /data
       BOOKS_DIR: /books
       BOOKDROP_DIR: /bookdrop
-      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
       SECURE_COOKIES: ${SECURE_COOKIES:-false}
       TZ: ${TZ:-Etc/UTC}
     volumes:
