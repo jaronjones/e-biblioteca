@@ -1206,13 +1206,17 @@ func (a *App) opdsBasicAuth(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
-		// Attach linked app user so CanDownload (and future perms) apply on OPDS routes.
-		if ou.UserID != nil {
-			if u, err := a.Store.GetUserByID(r.Context(), *ou.UserID); err == nil {
-				r = r.WithContext(auth.WithUser(r.Context(), u))
-			}
+		// OPDS credentials must map to a real app user so permissions apply.
+		if ou.UserID == nil {
+			http.Error(w, "opds user has no linked account", http.StatusForbidden)
+			return
 		}
-		next.ServeHTTP(w, r)
+		u, err := a.Store.GetUserByID(r.Context(), *ou.UserID)
+		if err != nil {
+			http.Error(w, "linked account missing", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), u)))
 	})
 }
 
