@@ -15,8 +15,8 @@ import (
 )
 
 type Scanner struct {
-	Store   *store.Store
-	DataDir string
+	Store    *store.Store
+	DataDir  string
 	BooksDir string
 }
 
@@ -31,7 +31,10 @@ func (s *Scanner) ScanLibrary(ctx context.Context, libraryID int64) (int, error)
 		if !filepath.IsAbs(root) {
 			root = filepath.Join(s.BooksDir, root)
 		}
-		// ensure under books dir when relative
+		if !s.IsUnderBooks(root) {
+			log.Printf("scan: skip path outside books dir %s", root)
+			continue
+		}
 		info, err := os.Stat(root)
 		if err != nil || !info.IsDir() {
 			log.Printf("scan: skip missing path %s: %v", root, err)
@@ -69,13 +72,6 @@ func (s *Scanner) ScanLibrary(ctx context.Context, libraryID int64) (int, error)
 			if hash != "" {
 				book.FileHash = &hash
 			}
-			// save cover
-			if len(meta.CoverData) > 0 {
-				coverRel, err := s.saveCoverTemp(0, meta.CoverData, meta.CoverExt)
-				if err == nil {
-					book.Metadata.CoverPath = &coverRel
-				}
-			}
 			id, err := s.Store.UpsertBook(ctx, book, meta)
 			if err != nil {
 				log.Printf("scan upsert %s: %v", path, err)
@@ -97,12 +93,11 @@ func (s *Scanner) ScanLibrary(ctx context.Context, libraryID int64) (int, error)
 	return count, nil
 }
 
-func (s *Scanner) AbsoluteBookPath(book *models.Book) (string, error) {
-	lib, err := s.Store.GetLibrary(context.Background(), book.LibraryID)
+func (s *Scanner) AbsoluteBookPath(ctx context.Context, book *models.Book) (string, error) {
+	lib, err := s.Store.GetLibrary(ctx, book.LibraryID)
 	if err != nil {
 		return "", err
 	}
-	// find matching path entry
 	var root string
 	if book.LibraryPathID != nil {
 		for _, lp := range lib.Paths {
@@ -121,8 +116,24 @@ func (s *Scanner) AbsoluteBookPath(book *models.Book) (string, error) {
 	if !filepath.IsAbs(root) {
 		root = filepath.Join(s.BooksDir, root)
 	}
-	p := filepath.Join(root, filepath.FromSlash(book.FileSubPath), book.FileName)
-	return p, nil
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(rootAbs, filepath.FromSlash(book.FileSubPath), book.FileName)
+	pAbs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	// Ensure resolved path stays under the library root (and books dir).
+	rel, err := filepath.Rel(rootAbs, pAbs)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("book path escapes library root")
+	}
+	if !s.IsUnderBooks(pAbs) {
+		return "", fmt.Errorf("book path outside books directory")
+	}
+	return pAbs, nil
 }
 
 func (s *Scanner) saveCover(bookID int64, data []byte, ext string) (string, error) {
@@ -144,10 +155,6 @@ func (s *Scanner) saveCover(bookID int64, data []byte, ext string) (string, erro
 	return filepath.ToSlash(filepath.Join("covers", name)), nil
 }
 
-func (s *Scanner) saveCoverTemp(bookID int64, data []byte, ext string) (string, error) {
-	return s.saveCover(bookID, data, ext)
-}
-
 func (s *Scanner) SaveCoverBytes(bookID int64, data []byte, ext string) (string, error) {
 	return s.saveCover(bookID, data, ext)
 }
@@ -165,5 +172,5 @@ func (s *Scanner) IsUnderBooks(path string) bool {
 	if err != nil {
 		return false
 	}
-	return !strings.HasPrefix(rel, "..")
+	return rel == "." || (rel != "" && !strings.HasPrefix(rel, ".."))
 }

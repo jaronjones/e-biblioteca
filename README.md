@@ -29,7 +29,7 @@ A self-hosted digital library for ebooks, comics, and audiobooks.
 
 ```bash
 cp .env.example .env
-# edit SESSION_SECRET and POSTGRES_PASSWORD
+# edit POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
@@ -54,8 +54,9 @@ Volumes:
 | `DATA_DIR` | `/data` | Covers and app files |
 | `BOOKS_DIR` | `/books` | Library root |
 | `BOOKDROP_DIR` | `/bookdrop` | Drop folder |
-| `SESSION_SECRET` | — | Session encryption secret |
 | `SECURE_COOKIES` | `false` | Set `true` behind HTTPS |
+
+Sessions are stored in Postgres (cookie holds only the session ID).
 
 ## Local development
 

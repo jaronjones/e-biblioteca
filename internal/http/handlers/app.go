@@ -2,14 +2,19 @@ package handlers
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,19 +32,46 @@ import (
 	"github.com/jjones/e-biblioteca/internal/store"
 )
 
+const maxUploadBytes = 512 << 20 // 512 MiB hard cap
+
+type lookupEntry struct {
+	results []metadata.LookupResult
+	expires time.Time
+}
+
+type loginAttempt struct {
+	count       int
+	firstAt     time.Time
+	lockedUntil time.Time
+}
+
 type App struct {
 	Cfg      config.Config
 	Store    *store.Store
 	Auth     *auth.Manager
 	Scanner  *scanner.Scanner
 	Bookdrop *bookdrop.Service
+
+	setupDone     atomic.Bool
+	lookupMu      sync.Mutex
+	lookupCache   map[int64]lookupEntry
+	loginMu       sync.Mutex
+	loginAttempts map[string]*loginAttempt
 }
 
 func (a *App) Routes() http.Handler {
+	if a.lookupCache == nil {
+		a.lookupCache = map[int64]lookupEntry{}
+	}
+	if a.loginAttempts == nil {
+		a.loginAttempts = map[string]*loginAttempt{}
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.RealIP, middleware.Logger, middleware.Recoverer)
 	r.Use(a.Auth.Sessions.LoadAndSave)
 	r.Use(a.loadUser)
+	r.Use(a.csrfProtect)
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -108,9 +140,42 @@ func (a *App) Routes() http.Handler {
 		or.Get("/", a.opdsRoot)
 		or.Get("/catalog", a.opdsCatalog)
 		or.Get("/download/{id}", a.bookDownload)
+		or.Get("/cover/{id}", a.coverGet)
 	})
 
 	return r
+}
+
+// csrfProtect validates tokens on state-changing methods. Safe methods are skipped.
+func (a *App) csrfProtect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Ensure a token exists for the session (forms/meta can render it).
+		_ = a.Auth.CSRFToken(r.Context())
+		token := r.Header.Get("X-CSRF-Token")
+		if token == "" {
+			ct := r.Header.Get("Content-Type")
+			if strings.HasPrefix(ct, "multipart/form-data") {
+				// Cap body early; ParseMultipartForm spills large parts to disk.
+				r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+				if err := r.ParseMultipartForm(32 << 20); err == nil {
+					token = r.FormValue("csrf_token")
+				}
+			} else {
+				_ = r.ParseForm()
+				token = r.FormValue("csrf_token")
+			}
+		}
+		if !a.Auth.ValidCSRF(r.Context(), token) {
+			http.Error(w, "invalid csrf token", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (a *App) loadUser(next http.Handler) http.Handler {
@@ -126,10 +191,13 @@ func (a *App) loadUser(next http.Handler) http.Handler {
 
 func (a *App) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n, _ := a.Store.UserCount(r.Context())
-		if n == 0 {
-			http.Redirect(w, r, "/setup", http.StatusSeeOther)
-			return
+		if !a.setupDone.Load() {
+			n, _ := a.Store.UserCount(r.Context())
+			if n == 0 {
+				http.Redirect(w, r, "/setup", http.StatusSeeOther)
+				return
+			}
+			a.setupDone.Store(true)
 		}
 		if _, ok := auth.UserFromContext(r.Context()); !ok {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -156,7 +224,12 @@ func (a *App) themeFor(r *http.Request) string {
 
 func (a *App) render(w http.ResponseWriter, r *http.Request, title, active string, body templ.Component) {
 	u := a.currentUser(r)
-	nav := components.NavData{Active: active, Theme: a.themeFor(r), Themes: theme.Names}
+	nav := components.NavData{
+		Active:    active,
+		Theme:     a.themeFor(r),
+		Themes:    theme.Names,
+		CSRFToken: a.Auth.CSRFToken(r.Context()),
+	}
 	if u != nil {
 		nav.User = u.DisplayName
 		if nav.User == "" {
@@ -164,15 +237,12 @@ func (a *App) render(w http.ResponseWriter, r *http.Request, title, active strin
 		}
 		nav.IsAdmin = u.IsAdmin
 	}
-	// bookdrop badge
-	if files, err := a.Store.ListBookdrop(r.Context()); err == nil {
-		for _, f := range files {
-			if f.Status == "ready" {
-				nav.BookdropCount++
-			}
-		}
+	if n, err := a.Store.CountBookdropReady(r.Context()); err == nil {
+		nav.BookdropCount = n
 	}
-	components.Layout(title, nav, body).Render(r.Context(), w)
+	if err := components.Layout(title, nav, body).Render(r.Context(), w); err != nil {
+		log.Printf("render %s: %v", title, err)
+	}
 }
 
 func (a *App) setupGet(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +281,7 @@ func (a *App) setupPost(w http.ResponseWriter, r *http.Request) {
 		a.render(w, r, "Setup", "", components.SetupPage("Could not create admin: "+err.Error()))
 		return
 	}
+	a.setupDone.Store(true)
 	a.Auth.Login(r.Context(), r, w, u.ID)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -229,17 +300,78 @@ func (a *App) loginGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) loginPost(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if a.loginLocked(ip) {
+		a.render(w, r, "Login", "", components.LoginPage("Too many failed attempts. Try again in a few minutes."))
+		return
+	}
 	_ = r.ParseForm()
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 	u, err := a.Store.GetUserByUsername(r.Context(), username)
 	if err != nil || !auth.CheckPassword(u.PasswordHash, password) {
+		a.recordLoginFailure(ip)
 		a.render(w, r, "Login", "", components.LoginPage("Invalid username or password."))
 		return
 	}
+	a.clearLoginFailures(ip)
 	a.Auth.Login(r.Context(), r, w, u.ID)
 	http.SetCookie(w, &http.Cookie{Name: "theme", Value: u.Theme, Path: "/", MaxAge: 365 * 24 * 3600})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func (a *App) loginLocked(ip string) bool {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	att, ok := a.loginAttempts[ip]
+	if !ok {
+		return false
+	}
+	if time.Now().Before(att.lockedUntil) {
+		return true
+	}
+	// Reset window after lock expires.
+	if !att.lockedUntil.IsZero() && time.Now().After(att.lockedUntil) {
+		delete(a.loginAttempts, ip)
+	}
+	return false
+}
+
+func (a *App) recordLoginFailure(ip string) {
+	const maxAttempts = 8
+	const window = 15 * time.Minute
+	const lockFor = 15 * time.Minute
+
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	att, ok := a.loginAttempts[ip]
+	now := time.Now()
+	if !ok || now.Sub(att.firstAt) > window {
+		a.loginAttempts[ip] = &loginAttempt{count: 1, firstAt: now}
+		return
+	}
+	att.count++
+	if att.count >= maxAttempts {
+		att.lockedUntil = now.Add(lockFor)
+	}
+}
+
+func (a *App) clearLoginFailures(ip string) {
+	a.loginMu.Lock()
+	delete(a.loginAttempts, ip)
+	a.loginMu.Unlock()
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
@@ -362,7 +494,7 @@ func (a *App) bookDownload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path, err := a.Scanner.AbsoluteBookPath(book)
+	path, err := a.Scanner.AbsoluteBookPath(r.Context(), book)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -407,7 +539,13 @@ func (a *App) bookLookup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	components.LookupResults(id, results).Render(r.Context(), w)
+	// Keep results server-side; client only posts an index (SSRF mitigation).
+	a.lookupMu.Lock()
+	a.lookupCache[id] = lookupEntry{results: results, expires: time.Now().Add(30 * time.Minute)}
+	a.lookupMu.Unlock()
+	if err := components.LookupResults(id, results).Render(r.Context(), w); err != nil {
+		log.Printf("lookup results render: %v", err)
+	}
 }
 
 func (a *App) bookApplyLookup(w http.ResponseWriter, r *http.Request) {
@@ -418,8 +556,26 @@ func (a *App) bookApplyLookup(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	_ = r.ParseForm()
+	idx, err := strconv.Atoi(r.FormValue("index"))
+	if err != nil || idx < 0 {
+		http.Error(w, "invalid lookup index", 400)
+		return
+	}
+	a.lookupMu.Lock()
+	entry, ok := a.lookupCache[id]
+	if ok && time.Now().After(entry.expires) {
+		delete(a.lookupCache, id)
+		ok = false
+	}
 	var res metadata.LookupResult
-	_ = json.Unmarshal([]byte(r.FormValue("payload")), &res)
+	if ok && idx < len(entry.results) {
+		res = entry.results[idx]
+	}
+	a.lookupMu.Unlock()
+	if !ok || idx >= len(entry.results) {
+		http.Error(w, "lookup expired; run lookup again", 400)
+		return
+	}
 	authors := res.Authors
 	cats := res.Categories
 	_ = a.Store.UpdateBookMetadata(r.Context(), id, res.Title, res.Subtitle, res.Description, res.Publisher, "", res.ISBN13, authors, cats)
@@ -457,10 +613,20 @@ func (a *App) librariesCreate(w http.ResponseWriter, r *http.Request) {
 		a.render(w, r, "Libraries", "libraries", components.LibrariesPage(libs, a.Cfg.BooksDir, "Name and path required."))
 		return
 	}
-	// validate path under books dir or absolute existing
+	if strings.Contains(path, "..") {
+		libs, _ := a.Store.ListLibraries(r.Context())
+		a.render(w, r, "Libraries", "libraries", components.LibrariesPage(libs, a.Cfg.BooksDir, "Path must not contain '..'."))
+		return
+	}
+	// All library roots must stay under BOOKS_DIR (relative or absolute).
 	check := path
 	if !filepath.IsAbs(check) {
 		check = filepath.Join(a.Cfg.BooksDir, path)
+	}
+	if !a.Scanner.IsUnderBooks(check) {
+		libs, _ := a.Store.ListLibraries(r.Context())
+		a.render(w, r, "Libraries", "libraries", components.LibrariesPage(libs, a.Cfg.BooksDir, "Path must be under the books directory."))
+		return
 	}
 	if err := os.MkdirAll(check, 0o755); err != nil {
 		libs, _ := a.Store.ListLibraries(r.Context())
@@ -527,8 +693,13 @@ func (a *App) shelvesCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) shelfDetail(w http.ResponseWriter, r *http.Request) {
+	u := a.currentUser(r)
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	books, _ := a.Store.ShelfBooks(r.Context(), id)
+	books, err := a.Store.ShelfBooks(r.Context(), id, u.ID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	a.render(w, r, "Shelf", "shelves", components.ShelfDetailPage(id, books))
 }
 
@@ -540,16 +711,24 @@ func (a *App) shelfDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) shelfAddBook(w http.ResponseWriter, r *http.Request) {
+	u := a.currentUser(r)
 	shelfID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	bookID, _ := strconv.ParseInt(chi.URLParam(r, "bookID"), 10, 64)
-	_ = a.Store.AddToShelf(r.Context(), shelfID, bookID)
+	if err := a.Store.AddToShelf(r.Context(), shelfID, bookID, u.ID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	http.Redirect(w, r, fmt.Sprintf("/books/%d", bookID), http.StatusSeeOther)
 }
 
 func (a *App) shelfRemoveBook(w http.ResponseWriter, r *http.Request) {
+	u := a.currentUser(r)
 	shelfID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	bookID, _ := strconv.ParseInt(chi.URLParam(r, "bookID"), 10, 64)
-	_ = a.Store.RemoveFromShelf(r.Context(), shelfID, bookID)
+	if err := a.Store.RemoveFromShelf(r.Context(), shelfID, bookID, u.ID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	http.Redirect(w, r, fmt.Sprintf("/shelves/%d", shelfID), http.StatusSeeOther)
 }
 
@@ -635,6 +814,11 @@ func (a *App) bookdropImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) bookdropReject(w http.ResponseWriter, r *http.Request) {
+	u := a.currentUser(r)
+	if err := auth.RequirePerm(u, func(p models.Permissions) bool { return p.CanUpload || p.CanManageLibrary }); err != nil {
+		http.Error(w, "forbidden", 403)
+		return
+	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if f, err := a.Store.GetBookdrop(r.Context(), id); err == nil {
 		_ = os.Remove(f.Path)
@@ -649,9 +833,13 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", 403)
 		return
 	}
-	if err := r.ParseMultipartForm(512 << 20); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
+	// Body may already be parsed by csrfProtect; re-parse if needed.
+	if r.MultipartForm == nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
 	}
 	libID, _ := strconv.ParseInt(r.FormValue("library_id"), 10, 64)
 	lib, err := a.Store.GetLibrary(r.Context(), libID)
@@ -674,16 +862,30 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 	if !filepath.IsAbs(root) {
 		root = filepath.Join(a.Cfg.BooksDir, root)
 	}
+	if !a.Scanner.IsUnderBooks(root) {
+		http.Error(w, "library path outside books directory", 400)
+		return
+	}
 	_ = os.MkdirAll(root, 0o755)
-	dest := filepath.Join(root, filepath.Base(hdr.Filename))
-	out, err := os.Create(dest)
+	destName := uniqueUploadName(root, filepath.Base(hdr.Filename))
+	dest := filepath.Join(root, destName)
+	tmp := dest + ".partial"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	n, err := io.Copy(out, file)
-	out.Close()
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
 	if err != nil {
+		_ = os.Remove(tmp)
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Remove(tmp)
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -691,7 +893,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 	hash, _ := metadata.HashFile(dest)
 	lpID := lib.Paths[0].ID
 	book := models.Book{
-		LibraryID: libID, LibraryPathID: &lpID, FileName: filepath.Base(hdr.Filename),
+		LibraryID: libID, LibraryPathID: &lpID, FileName: destName,
 		Format: format, FileSize: n,
 	}
 	if hash != "" {
@@ -710,6 +912,19 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/books/%d", id), http.StatusSeeOther)
 }
 
+func uniqueUploadName(dir, name string) string {
+	base := filepath.Base(name)
+	candidate := base
+	for i := 1; ; i++ {
+		if _, err := os.Stat(filepath.Join(dir, candidate)); os.IsNotExist(err) {
+			return candidate
+		}
+		ext := filepath.Ext(base)
+		stem := strings.TrimSuffix(base, ext)
+		candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
+	}
+}
+
 func (a *App) readBook(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	book, err := a.Store.GetBook(r.Context(), id)
@@ -722,14 +937,29 @@ func (a *App) readBook(w http.ResponseWriter, r *http.Request) {
 	a.render(w, r, "Reading · "+book.Metadata.DisplayTitle(book.FileName), "books", components.ReaderPage(*book, prog))
 }
 
+func (a *App) requireDownload(w http.ResponseWriter, r *http.Request) bool {
+	u := a.currentUser(r)
+	// Session users need CanDownload; OPDS basic-auth path has no session user.
+	if u != nil {
+		if err := auth.RequirePerm(u, func(p models.Permissions) bool { return p.CanDownload }); err != nil {
+			http.Error(w, "forbidden", 403)
+			return false
+		}
+	}
+	return true
+}
+
 func (a *App) streamFile(w http.ResponseWriter, r *http.Request) {
+	if !a.requireDownload(w, r) {
+		return
+	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	book, err := a.Store.GetBook(r.Context(), id)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	path, err := a.Scanner.AbsoluteBookPath(book)
+	path, err := a.Scanner.AbsoluteBookPath(r.Context(), book)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -738,6 +968,9 @@ func (a *App) streamFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) cbzPage(w http.ResponseWriter, r *http.Request) {
+	if !a.requireDownload(w, r) {
+		return
+	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	n, _ := strconv.Atoi(chi.URLParam(r, "n"))
 	book, err := a.Store.GetBook(r.Context(), id)
@@ -745,7 +978,7 @@ func (a *App) cbzPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path, err := a.Scanner.AbsoluteBookPath(book)
+	path, err := a.Scanner.AbsoluteBookPath(r.Context(), book)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -839,9 +1072,9 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	perms := models.Permissions{
-		CanUpload: r.FormValue("can_upload") == "on",
-		CanDownload: r.FormValue("can_download") == "on" || r.FormValue("can_download") == "",
-		CanEditMetadata: r.FormValue("can_edit_metadata") == "on",
+		CanUpload:        r.FormValue("can_upload") == "on",
+		CanDownload:      r.FormValue("can_download") == "on" || r.FormValue("can_download") == "",
+		CanEditMetadata:  r.FormValue("can_edit_metadata") == "on",
 		CanManageLibrary: r.FormValue("can_manage_library") == "on",
 	}
 	admin := r.FormValue("is_admin") == "on"
@@ -861,9 +1094,9 @@ func (a *App) updateUserPerms(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	_ = r.ParseForm()
 	perms := models.Permissions{
-		CanUpload: r.FormValue("can_upload") == "on",
-		CanDownload: r.FormValue("can_download") == "on",
-		CanEditMetadata: r.FormValue("can_edit_metadata") == "on",
+		CanUpload:        r.FormValue("can_upload") == "on",
+		CanDownload:      r.FormValue("can_download") == "on",
+		CanEditMetadata:  r.FormValue("can_edit_metadata") == "on",
 		CanManageLibrary: r.FormValue("can_manage_library") == "on",
 	}
 	admin := r.FormValue("is_admin") == "on"
@@ -922,50 +1155,129 @@ func (a *App) opdsBasicAuth(next http.Handler) http.Handler {
 func (a *App) opdsRoot(w http.ResponseWriter, r *http.Request) {
 	base := schemeHost(r)
 	w.Header().Set("Content-Type", "application/atom+xml;profile=opds-catalog;kind=navigation")
-	fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
-  <id>%s/opds</id>
-  <title>e-biblioteca</title>
-  <updated>%s</updated>
-  <link rel="self" href="%s/opds" type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
-  <link rel="start" href="%s/opds" type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
-  <entry>
-    <title>All books</title>
-    <id>%s/opds/catalog</id>
-    <updated>%s</updated>
-    <link rel="subsection" href="%s/opds/catalog" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
-    <content type="text">Browse the full library</content>
-  </entry>
-</feed>`, base, nowAtom(), base, base, base, nowAtom(), base)
+	updated := nowAtom()
+	feed := opdsFeed{
+		XMLNS:   "http://www.w3.org/2005/Atom",
+		XMLNSOp: "http://opds-spec.org/2010/catalog",
+		ID:      base + "/opds",
+		Title:   "e-biblioteca",
+		Updated: updated,
+		Links: []opdsLink{
+			{Rel: "self", Href: base + "/opds", Type: "application/atom+xml;profile=opds-catalog;kind=navigation"},
+			{Rel: "start", Href: base + "/opds", Type: "application/atom+xml;profile=opds-catalog;kind=navigation"},
+		},
+		Entries: []opdsEntry{{
+			Title:   "All books",
+			ID:      base + "/opds/catalog",
+			Updated: updated,
+			Links: []opdsLink{
+				{Rel: "subsection", Href: base + "/opds/catalog", Type: "application/atom+xml;profile=opds-catalog;kind=acquisition"},
+			},
+			Content: &opdsContent{Type: "text", Body: "Browse the full library"},
+		}},
+	}
+	writeOPDS(w, feed)
 }
 
 func (a *App) opdsCatalog(w http.ResponseWriter, r *http.Request) {
-	books, _, err := a.Store.ListBooks(r.Context(), store.BookFilter{Limit: 200})
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	const limit = 50
+	books, total, err := a.Store.ListBooks(r.Context(), store.BookFilter{Limit: limit, Offset: (page - 1) * limit})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	base := schemeHost(r)
-	w.Header().Set("Content-Type", "application/atom+xml;profile=opds-catalog;kind=acquisition")
-	var b strings.Builder
-	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
-	b.WriteString(`<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">`)
-	fmt.Fprintf(&b, `<id>%s/opds/catalog</id><title>All books</title><updated>%s</updated>`, base, nowAtom())
-	fmt.Fprintf(&b, `<link rel="self" href="%s/opds/catalog" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>`, base)
-	for _, book := range books {
-		title := book.Metadata.DisplayTitle(book.FileName)
-		mime := mimeFor(book.Format)
-		fmt.Fprintf(&b, `<entry><title>%s</title><id>%s/books/%d</id><updated>%s</updated>`,
-			xmlEscape(title), base, book.ID, nowAtom())
-		if len(book.Authors) > 0 {
-			fmt.Fprintf(&b, `<author><name>%s</name></author>`, xmlEscape(book.Authors[0]))
-		}
-		fmt.Fprintf(&b, `<link rel="http://opds-spec.org/acquisition" href="%s/opds/download/%d" type="%s"/>`, base, book.ID, mime)
-		fmt.Fprintf(&b, `<link rel="http://opds-spec.org/image" href="%s/covers/%d" type="image/jpeg"/>`, base, book.ID)
-		b.WriteString(`</entry>`)
+	self := fmt.Sprintf("%s/opds/catalog?page=%d", base, page)
+	updated := nowAtom()
+	feed := opdsFeed{
+		XMLNS:   "http://www.w3.org/2005/Atom",
+		XMLNSOp: "http://opds-spec.org/2010/catalog",
+		ID:      base + "/opds/catalog",
+		Title:   "All books",
+		Updated: updated,
+		Links: []opdsLink{
+			{Rel: "self", Href: self, Type: "application/atom+xml;profile=opds-catalog;kind=acquisition"},
+			{Rel: "start", Href: base + "/opds", Type: "application/atom+xml;profile=opds-catalog;kind=navigation"},
+		},
 	}
-	b.WriteString(`</feed>`)
-	_, _ = w.Write([]byte(b.String()))
+	if page > 1 {
+		feed.Links = append(feed.Links, opdsLink{
+			Rel: "previous", Href: fmt.Sprintf("%s/opds/catalog?page=%d", base, page-1),
+			Type: "application/atom+xml;profile=opds-catalog;kind=acquisition",
+		})
+	}
+	if page*limit < total {
+		feed.Links = append(feed.Links, opdsLink{
+			Rel: "next", Href: fmt.Sprintf("%s/opds/catalog?page=%d", base, page+1),
+			Type: "application/atom+xml;profile=opds-catalog;kind=acquisition",
+		})
+	}
+	for _, book := range books {
+		e := opdsEntry{
+			Title:   book.Metadata.DisplayTitle(book.FileName),
+			ID:      fmt.Sprintf("%s/books/%d", base, book.ID),
+			Updated: updated,
+			Links: []opdsLink{
+				{Rel: "http://opds-spec.org/acquisition", Href: fmt.Sprintf("%s/opds/download/%d", base, book.ID), Type: mimeFor(book.Format)},
+				{Rel: "http://opds-spec.org/image", Href: fmt.Sprintf("%s/opds/cover/%d", base, book.ID), Type: "image/jpeg"},
+			},
+		}
+		if len(book.Authors) > 0 {
+			e.Author = &opdsAuthor{Name: book.Authors[0]}
+		}
+		feed.Entries = append(feed.Entries, e)
+	}
+	w.Header().Set("Content-Type", "application/atom+xml;profile=opds-catalog;kind=acquisition")
+	writeOPDS(w, feed)
+}
+
+type opdsFeed struct {
+	XMLName xml.Name    `xml:"feed"`
+	XMLNS   string      `xml:"xmlns,attr"`
+	XMLNSOp string      `xml:"xmlns:opds,attr"`
+	ID      string      `xml:"id"`
+	Title   string      `xml:"title"`
+	Updated string      `xml:"updated"`
+	Links   []opdsLink  `xml:"link"`
+	Entries []opdsEntry `xml:"entry"`
+}
+
+type opdsLink struct {
+	Rel  string `xml:"rel,attr"`
+	Href string `xml:"href,attr"`
+	Type string `xml:"type,attr"`
+}
+
+type opdsEntry struct {
+	Title   string       `xml:"title"`
+	ID      string       `xml:"id"`
+	Updated string       `xml:"updated"`
+	Author  *opdsAuthor  `xml:"author,omitempty"`
+	Links   []opdsLink   `xml:"link"`
+	Content *opdsContent `xml:"content,omitempty"`
+}
+
+type opdsAuthor struct {
+	Name string `xml:"name"`
+}
+
+type opdsContent struct {
+	Type string `xml:"type,attr"`
+	Body string `xml:",chardata"`
+}
+
+func writeOPDS(w http.ResponseWriter, feed opdsFeed) {
+	w.Header().Set("Content-Type", "application/atom+xml;profile=opds-catalog")
+	_, _ = w.Write([]byte(xml.Header))
+	enc := xml.NewEncoder(w)
+	enc.Indent("", "  ")
+	if err := enc.Encode(feed); err != nil {
+		log.Printf("opds encode: %v", err)
+	}
 }
 
 func schemeHost(r *http.Request) string {
@@ -1002,11 +1314,7 @@ func mimeFor(format string) string {
 	}
 }
 
+// xmlEscape remains for any hand-built fragments; prefer encoding/xml for feeds.
 func xmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, `"`, "&quot;")
-	return s
+	return html.EscapeString(s)
 }
-

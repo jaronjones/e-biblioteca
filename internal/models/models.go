@@ -18,13 +18,13 @@ type User struct {
 }
 
 type Permissions struct {
-	CanUpload         bool
-	CanDownload       bool
-	CanEditMetadata   bool
-	CanManageLibrary  bool
+	CanUpload        bool
+	CanDownload      bool
+	CanEditMetadata  bool
+	CanManageLibrary bool
 }
 
-func (p Permissions) CanAdmin(u User) bool {
+func (u User) CanAdmin() bool {
 	return u.IsAdmin
 }
 
@@ -103,13 +103,13 @@ type MagicShelf struct {
 }
 
 type MagicRules struct {
-	Author     string `json:"author,omitempty"`
-	Category   string `json:"category,omitempty"`
-	Series     string `json:"series,omitempty"`
-	Format     string `json:"format,omitempty"`
-	Status     string `json:"status,omitempty"`
-	LibraryID  int64  `json:"library_id,omitempty"`
-	Query      string `json:"query,omitempty"`
+	Author    string `json:"author,omitempty"`
+	Category  string `json:"category,omitempty"`
+	Series    string `json:"series,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Status    string `json:"status,omitempty"`
+	LibraryID int64  `json:"library_id,omitempty"`
+	Query     string `json:"query,omitempty"`
 }
 
 func (r MagicRules) JSON() json.RawMessage {
@@ -127,16 +127,16 @@ type Progress struct {
 }
 
 type BookdropFile struct {
-	ID            int64
-	Path          string
-	FileName      string
-	Format        *string
-	Status        string
-	MetadataJSON  json.RawMessage
-	CoverPath     *string
-	ErrorMessage  *string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID           int64
+	Path         string
+	FileName     string
+	Format       *string
+	Status       string
+	MetadataJSON json.RawMessage
+	CoverPath    *string
+	ErrorMessage *string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 	// parsed convenience
 	Title   string
 	Authors string
@@ -168,9 +168,9 @@ type ExtractedMetadata struct {
 }
 
 type DashboardData struct {
-	BookCount      int
-	LibraryCount   int
-	InProgress     []Book
-	RecentlyAdded  []Book
-	BookdropReady  int
+	BookCount     int
+	LibraryCount  int
+	InProgress    []Book
+	RecentlyAdded []Book
+	BookdropReady int
 }

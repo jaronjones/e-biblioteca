@@ -3,6 +3,8 @@ package bookdrop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -186,13 +188,30 @@ func (s *Service) Import(ctx context.Context, dropID, libraryID int64, booksDir 
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return 0, err
 	}
-	dest := filepath.Join(root, f.FileName)
-	// copy
-	in, err := os.ReadFile(f.Path)
+	// Avoid clobbering an existing library file of the same name.
+	destName := uniqueFileName(root, f.FileName)
+	dest := filepath.Join(root, destName)
+	tmp := dest + ".partial"
+	src, err := os.Open(f.Path)
 	if err != nil {
 		return 0, err
 	}
-	if err := os.WriteFile(dest, in, 0o644); err != nil {
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		src.Close()
+		return 0, err
+	}
+	n, err := io.Copy(out, src)
+	src.Close()
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return 0, err
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Remove(tmp)
 		return 0, err
 	}
 	format := ""
@@ -213,10 +232,10 @@ func (s *Service) Import(ctx context.Context, dropID, libraryID int64, booksDir 
 	book := models.Book{
 		LibraryID:     libraryID,
 		LibraryPathID: &lpID,
-		FileName:      f.FileName,
+		FileName:      destName,
 		FileSubPath:   "",
 		Format:        format,
-		FileSize:      int64(len(in)),
+		FileSize:      n,
 	}
 	if hash != "" {
 		book.FileHash = &hash
@@ -240,4 +259,17 @@ func (s *Service) Import(ctx context.Context, dropID, libraryID int64, booksDir 
 	_ = s.Store.UpdateBookdropStatus(ctx, dropID, "imported")
 	_ = os.Remove(f.Path)
 	return id, nil
+}
+
+func uniqueFileName(dir, name string) string {
+	base := filepath.Base(name)
+	candidate := base
+	for i := 1; ; i++ {
+		if _, err := os.Stat(filepath.Join(dir, candidate)); os.IsNotExist(err) {
+			return candidate
+		}
+		ext := filepath.Ext(base)
+		stem := strings.TrimSuffix(base, ext)
+		candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
+	}
 }

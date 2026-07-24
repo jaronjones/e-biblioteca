@@ -3,6 +3,7 @@ package components
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/jjones/e-biblioteca/internal/models"
@@ -103,11 +104,11 @@ templ BooksPage(books []models.Book, libs []models.Library, q, format string, li
 		if pages > 1 {
 			<div class="pagination">
 				if page > 1 {
-					<a class="btn btn-ghost" href={ fmt.Sprintf("/books?q=%s&format=%s&library=%d&page=%d", q, format, libID, page-1) }>Previous</a>
+					<a class="btn btn-ghost" href={ booksPageURL(q, format, libID, page-1) }>Previous</a>
 				}
 				<span class="muted">Page { fmt.Sprintf("%d / %d", page, pages) }</span>
 				if page < pages {
-					<a class="btn btn-ghost" href={ fmt.Sprintf("/books?q=%s&format=%s&library=%d&page=%d", q, format, libID, page+1) }>Next</a>
+					<a class="btn btn-ghost" href={ booksPageURL(q, format, libID, page+1) }>Next</a>
 				}
 			</div>
 		}
@@ -249,7 +250,7 @@ templ LookupResults(bookID int64, results []metadata.LookupResult) {
 		<p class="muted">No results found.</p>
 	} else {
 		<div class="lookup-list">
-			for _, r := range results {
+			for i, r := range results {
 				<div class="lookup-item card">
 					<div>
 						<strong>{ r.Title }</strong>
@@ -259,7 +260,7 @@ templ LookupResults(bookID int64, results []metadata.LookupResult) {
 						}
 					</div>
 					<form method="post" action={ fmt.Sprintf("/books/%d/apply-lookup", bookID) }>
-						<input type="hidden" name="payload" value={ lookupJSON(r) }/>
+						<input type="hidden" name="index" value={ fmt.Sprintf("%d", i) }/>
 						<button class="btn btn-sm btn-primary" type="submit">Apply</button>
 					</form>
 				</div>
@@ -268,21 +269,42 @@ templ LookupResults(bookID int64, results []metadata.LookupResult) {
 	}
 }
 
-func lookupJSON(r metadata.LookupResult) string {
-	b, _ := json.Marshal(r)
-	return string(b)
+func booksPageURL(q, format string, libID int64, page int) string {
+	v := url.Values{}
+	if q != "" {
+		v.Set("q", q)
+	}
+	if format != "" {
+		v.Set("format", format)
+	}
+	if libID > 0 {
+		v.Set("library", fmt.Sprintf("%d", libID))
+	}
+	if page > 1 {
+		v.Set("page", fmt.Sprintf("%d", page))
+	}
+	qs := v.Encode()
+	if qs == "" {
+		return "/books"
+	}
+	return "/books?" + qs
 }
 
-func progressJSON(p *models.Progress) string {
+func progressData(p *models.Progress) map[string]any {
 	if p == nil {
-		return `{"percent":0,"position":{},"status":"unread"}`
+		return map[string]any{"percent": float64(0), "position": map[string]any{}, "status": "unread"}
 	}
-	b, _ := json.Marshal(map[string]any{
-		"percent": p.Percent,
-		"position": json.RawMessage(p.Position),
-		"status": p.Status,
-	})
-	return string(b)
+	var pos any = map[string]any{}
+	if len(p.Position) > 0 {
+		if err := json.Unmarshal(p.Position, &pos); err != nil {
+			pos = map[string]any{}
+		}
+	}
+	return map[string]any{
+		"percent":  p.Percent,
+		"position": pos,
+		"status":   p.Status,
+	}
 }
 
 templ LibrariesPage(libs []models.Library, booksDir, errMsg string) {
@@ -290,7 +312,7 @@ templ LibrariesPage(libs []models.Library, booksDir, errMsg string) {
 		<header class="page-header">
 			<div>
 				<h1>Libraries</h1>
-				<p class="muted">Paths are relative to { booksDir } or absolute.</p>
+				<p class="muted">Paths must be under { booksDir } (relative or absolute).</p>
 			</div>
 		</header>
 		if errMsg != "" {
@@ -530,7 +552,7 @@ templ ReaderPage(book models.Book, prog *models.Progress) {
 			</div>
 			<script src="/static/js/readers/audio.js"></script>
 		}
-		<script type="application/json" id="progress-data">{ progressJSON(prog) }</script>
+		@templ.JSONScript("progress-data", progressData(prog))
 	</div>
 }
 
