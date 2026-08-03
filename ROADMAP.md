@@ -17,7 +17,7 @@ convention in `docs/phases/`.
 | 2 | Send-to-Kindle / email delivery | S | planned | — |
 | 3 | CBR/CB7 + MOBI/FB2 format support | M | planned | — |
 | 4 | Format conversion | L (M via sidecar) | planned | — |
-| 5 | Annotations, highlights & bookmarks | M–L | planned | — |
+| 5 | Annotations, highlights & bookmarks | M–L | in progress | phase/9-annotations |
 | 6 | Full-text search inside books | M | planned | — |
 | 7 | Reading statistics | S–M | planned | — |
 | 8 | Bulk metadata edit + dedupe | M | planned | — |
@@ -68,10 +68,15 @@ from OPDS and the book page.
 Kavita lets readers highlight, note, share, and export to Obsidian. We have
 nothing between "reading" and "finished".
 
-- [ ] `annotations` table (book_id, user_id, CFI, color, note, created_at)
-- [ ] epub.js CFI-anchored highlights in the EPUB reader
-- [ ] Bookmarks for PDF/CBZ (page-based)
-- [ ] Export (markdown/Obsidian) as a differentiator
+PRD: `tasks/prd-annotations.md` (locked). Phase notes: `docs/phases/09-annotations.md`.
+
+- [x] `annotations` table (kind, color, quote, note, tags, anchor JSONB, sort_key)
+- [x] Session JSON API (list/create/patch/delete) + private isolation
+- [x] epub.js CFI-anchored highlights + panel
+- [x] PDF via pdf.js (page bookmarks + text highlights)
+- [x] CBZ page bookmarks; audio timestamp bookmarks
+- [x] Library-wide `/annotations` browser + search
+- [x] Markdown / Obsidian export (per-book + bulk concatenated)
 
 ## 6. Full-text search inside books — `M`
 
