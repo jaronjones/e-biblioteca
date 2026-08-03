@@ -13,3 +13,5 @@
 | 8 | `phase/8-harden` | Docs, polish, release readiness |
 
 Merge order: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 into `main`.
+
+Future phases are drawn from the feature tracker in [ROADMAP.md](../../ROADMAP.md).

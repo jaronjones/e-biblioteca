@@ -2,8 +2,15 @@
 
 ## Scope
 - EPUB/CBZ embedded metadata extraction
+- PDF extraction (pdfcpu): Info dict title/author/subject/keywords, page
+  count, and an ISBN scan over the first pages' content streams
+- EPUB cover resolution: EPUB3 `properties="cover-image"`, then EPUB2
+  `<meta name="cover">` indirection, then name heuristics — no cover is
+  stored when none is declared (providers backfill on enrichment)
+- ISBNs are check-digit validated (EPUB identifiers and PDF page scans)
 - Cover extraction and storage under data/covers
-- Open Library + Google Books lookup
+- Open Library + Google Books lookup; `metadata.Enrich` runs on BookDrop
+  intake and direct upload (library rescans stay extraction-only)
 - Manual metadata edit UI and FTS
 
 ## Primary packages

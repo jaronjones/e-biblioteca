@@ -120,18 +120,7 @@ func (s *Service) process(ctx context.Context, path string) {
 		return
 	}
 	meta, _ := metadata.Extract(path)
-	// optional remote enrich
-	if meta.Title != "" {
-		if results, err := metadata.Lookup(ctx, meta.Title, first(meta.Authors), meta.ISBN13); err == nil && len(results) > 0 {
-			metadata.ApplyLookup(&meta, results[0])
-			if len(meta.CoverData) == 0 && results[0].CoverURL != "" {
-				if data, ext, err := metadata.DownloadCover(ctx, results[0].CoverURL); err == nil {
-					meta.CoverData = data
-					meta.CoverExt = ext
-				}
-			}
-		}
-	}
+	metadata.Enrich(ctx, &meta)
 	var coverRel *string
 	if len(meta.CoverData) > 0 {
 		dir := filepath.Join(s.DataDir, "bookdrop-covers")
@@ -156,13 +145,6 @@ func (s *Service) process(ctx context.Context, path string) {
 		"categories":  meta.Categories,
 	})
 	_ = s.Store.UpsertBookdrop(ctx, path, base, format, "ready", payload, coverRel, nil)
-}
-
-func first(ss []string) string {
-	if len(ss) == 0 {
-		return ""
-	}
-	return ss[0]
 }
 
 func (s *Service) Import(ctx context.Context, dropID, libraryID int64, booksDir string, scn interface {

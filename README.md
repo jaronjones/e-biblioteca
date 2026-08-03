@@ -85,6 +85,10 @@ Use the OPDS username/password (HTTP basic auth).
 
 Themes live in `web/static/css/themes.css` as CSS custom property packs. UI components in `base.css` use only semantic tokens (`--color-base-100`, `--color-primary`, etc.) so themes swap via `data-theme` without rewriting markup.
 
+## Roadmap
+
+Planned features and their status live in [ROADMAP.md](ROADMAP.md).
+
 ## License
 
 MIT

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -688,6 +689,10 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta, _ := metadata.Extract(dest)
+	// bounded so a slow provider can't stall the upload response
+	ectx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	metadata.Enrich(ectx, &meta)
+	cancel()
 	hash, _ := metadata.HashFile(dest)
 	lpID := lib.Paths[0].ID
 	book := models.Book{

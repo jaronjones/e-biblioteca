@@ -300,6 +300,33 @@ func DownloadCover(ctx context.Context, coverURL string) ([]byte, string, error)
 	return data, ext, nil
 }
 
+// Enrich overlays the best remote match onto meta and fetches a cover when
+// the file didn't embed one. Provider failures leave meta untouched.
+func Enrich(ctx context.Context, meta *models.ExtractedMetadata) {
+	isbn := meta.ISBN13
+	if isbn == "" {
+		isbn = meta.ISBN10
+	}
+	if meta.Title == "" && isbn == "" {
+		return
+	}
+	var author string
+	if len(meta.Authors) > 0 {
+		author = meta.Authors[0]
+	}
+	results, err := Lookup(ctx, meta.Title, author, isbn)
+	if err != nil || len(results) == 0 {
+		return
+	}
+	ApplyLookup(meta, results[0])
+	if len(meta.CoverData) == 0 && results[0].CoverURL != "" {
+		if data, ext, err := DownloadCover(ctx, results[0].CoverURL); err == nil {
+			meta.CoverData = data
+			meta.CoverExt = ext
+		}
+	}
+}
+
 func ApplyLookup(meta *models.ExtractedMetadata, r LookupResult) {
 	if r.Title != "" {
 		meta.Title = r.Title
