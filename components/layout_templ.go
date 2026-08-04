@@ -55,7 +55,7 @@ func Layout(title string, nav NavData, body templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " · e-biblioteca</title><link rel=\"stylesheet\" href=\"/static/css/themes.css\"><link rel=\"stylesheet\" href=\"/static/css/base.css\"><script src=\"https://unpkg.com/htmx.org@2.0.4\"></script><script defer src=\"/static/js/app.js\"></script></head><body class=\"app-body\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " · e-biblioteca</title><link rel=\"stylesheet\" href=\"/static/css/themes.css\"><link rel=\"stylesheet\" href=\"/static/css/base.css\"><script src=\"/static/vendor/htmx.min.js\"></script><script defer src=\"/static/js/app.js\"></script></head><body class=\"app-body\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
