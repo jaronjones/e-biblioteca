@@ -27,7 +27,9 @@
   }
   const size = ensureSize();
 
-  const book = ePub(`/stream/${bookId}`);
+  // /stream/{id} has no .epub extension; without openAs epub.js treats it as a directory
+  // and requests META-INF/container.xml under /stream/ (404, blank viewer).
+  const book = ePub(`/stream/${bookId}`, { openAs: 'epub' });
   const rendition = book.renderTo(el, {
     width: size.width,
     height: size.height,

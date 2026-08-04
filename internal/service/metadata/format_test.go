@@ -9,18 +9,20 @@ func TestFormatFromPath(t *testing.T) {
 		"c.cbz":  "cbz",
 		"d.mp3":  "mp3",
 		"e.m4b":  "m4b",
+		"g.m4a":  "m4a",
+		"h.opus": "opus",
 		"f.txt":  "",
 	}
 	for path, want := range cases {
 		got, ok := FormatFromPath(path)
 		if want == "" {
 			if ok {
-				t.Fatalf("%s: expected unsupported, got %s", path, got)
+				t.Errorf("%s: expected unsupported, got %s", path, got)
 			}
 			continue
 		}
 		if !ok || got != want {
-			t.Fatalf("%s: got %s ok=%v want %s", path, got, ok, want)
+			t.Errorf("%s: got %s ok=%v want %s", path, got, ok, want)
 		}
 	}
 }

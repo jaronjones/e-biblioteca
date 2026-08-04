@@ -8,3 +8,5 @@
 ## Primary packages
 - Store shelf/magic shelf APIs
 - Handlers: `/shelves`, `/magic-shelves`
+## Status
+Implemented as part of Phase 1. Shelf mutations are scoped by `user_id` (no IDOR).

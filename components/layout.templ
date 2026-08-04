@@ -6,6 +6,9 @@ templ Layout(title string, nav NavData, body templ.Component) {
 		<head>
 			<meta charset="UTF-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			if nav.CSRFToken != "" {
+				<meta name="csrf-token" content={ nav.CSRFToken }/>
+			}
 			<title>{ title } · e-biblioteca</title>
 			<link rel="stylesheet" href="/static/css/themes.css"/>
 			<link rel="stylesheet" href="/static/css/base.css"/>
@@ -37,6 +40,7 @@ templ Layout(title string, nav NavData, body templ.Component) {
 						<div class="side-footer">
 							<div class="muted">{ nav.User }</div>
 							<form method="post" action="/logout">
+								@CSRFField()
 								<button class="btn btn-ghost btn-sm" type="submit">Log out</button>
 							</form>
 						</div>

@@ -16,3 +16,8 @@
 ## Primary packages
 - `internal/service/metadata`
 - Book edit handlers and lookup partials
+
+## Status
+Baseline extraction shipped with Phase 1. Hardening (PDF via pdfcpu, spec-order
+EPUB covers, ISBN check digits, shared Enrich) is part of Phase 8
+(`phase/8-harden`). Unit coverage lives under `internal/service/metadata/*_test.go`.

@@ -2,6 +2,9 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strconv"
@@ -18,6 +21,7 @@ import (
 const (
 	sessionUserKey = "user_id"
 	ctxUserKey     = ctxKey("user")
+	ctxCSRFKey     = ctxKey("csrf")
 )
 
 type ctxKey string
@@ -47,9 +51,36 @@ func CheckPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-func (m *Manager) Login(ctx context.Context, r *http.Request, w http.ResponseWriter, userID int64) {
+func (m *Manager) Login(ctx context.Context, _ *http.Request, _ http.ResponseWriter, userID int64) {
+	// Renew before writing session data after privilege change (scs docs).
+	_ = m.Sessions.RenewToken(ctx)
 	m.Sessions.Put(ctx, sessionUserKey, userID)
-	m.Sessions.RenewToken(ctx)
+}
+
+// CSRFToken returns the session CSRF token, creating one if needed.
+func (m *Manager) CSRFToken(ctx context.Context) string {
+	if v, ok := m.Sessions.Get(ctx, "csrf_token").(string); ok && v != "" {
+		return v
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Extremely unlikely; fall back to time-based entropy.
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	tok := hex.EncodeToString(b[:])
+	m.Sessions.Put(ctx, "csrf_token", tok)
+	return tok
+}
+
+func (m *Manager) ValidCSRF(ctx context.Context, token string) bool {
+	if token == "" {
+		return false
+	}
+	expected, _ := m.Sessions.Get(ctx, "csrf_token").(string)
+	if expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(token)) == 1
 }
 
 func (m *Manager) Logout(ctx context.Context) {
@@ -83,6 +114,15 @@ func WithUser(ctx context.Context, u *models.User) context.Context {
 func UserFromContext(ctx context.Context) (*models.User, bool) {
 	u, ok := ctx.Value(ctxUserKey).(*models.User)
 	return u, ok && u != nil
+}
+
+func WithCSRF(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, ctxCSRFKey, token)
+}
+
+func CSRFFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxCSRFKey).(string)
+	return v
 }
 
 var ErrUnauthorized = errors.New("unauthorized")

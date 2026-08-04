@@ -30,7 +30,7 @@ A self-hosted digital library for ebooks, comics, and audiobooks.
 
 ```bash
 cp .env.example .env
-# edit SESSION_SECRET and POSTGRES_PASSWORD
+# edit POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
@@ -64,8 +64,9 @@ Volumes:
 | `DATA_DIR` | `/data` | Covers and app files |
 | `BOOKS_DIR` | `/books` | Library root |
 | `BOOKDROP_DIR` | `/bookdrop` | Drop folder |
-| `SESSION_SECRET` | — | Session encryption secret |
 | `SECURE_COOKIES` | `false` | Set `true` behind HTTPS |
+
+Sessions are stored in Postgres (cookie holds only the session ID).
 
 ## Local development
 
@@ -94,6 +95,25 @@ Use the OPDS username/password (HTTP basic auth).
 ## Themes
 
 Themes live in `web/static/css/themes.css` as CSS custom property packs. UI components in `base.css` use only semantic tokens (`--color-base-100`, `--color-primary`, etc.) so themes swap via `data-theme` without rewriting markup.
+
+## Offline / air-gapped
+
+Frontend libraries (htmx, JSZip, epub.js, pdf.js) are vendored under `web/static/vendor/`. No CDN access is required at runtime.
+
+## Development checks
+
+```bash
+go test ./...
+go vet ./...
+gofmt -l .
+go build -o bin/e-biblioteca ./cmd/server
+```
+
+CI runs the same on every pull request (`.github/workflows/ci.yml`).
+
+## Implementation phases
+
+See [docs/phases/README.md](docs/phases/README.md) for the phase map.
 
 ## Roadmap
 

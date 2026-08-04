@@ -318,20 +318,22 @@ func (s *Store) ListBooks(ctx context.Context, f BookFilter) ([]models.Book, int
 		where = append(where, "b.format = "+arg(f.Format))
 	}
 	if f.Query != "" {
-		where = append(where, "(m.search_vector @@ plainto_tsquery('english', "+arg(f.Query)+") OR m.title ILIKE "+arg("%"+f.Query+"%")+")")
+		// plainto_tsquery handles the FTS side; escape LIKE wildcards for ILIKE.
+		like := "%" + escapeLike(f.Query) + "%"
+		where = append(where, "(m.search_vector @@ plainto_tsquery('english', "+arg(f.Query)+") OR m.title ILIKE "+arg(like)+" ESCAPE '\\')")
 	}
 	if f.Author != "" {
 		where = append(where, `EXISTS (
 			SELECT 1 FROM book_authors ba JOIN authors a ON a.id=ba.author_id
-			WHERE ba.book_id=b.id AND a.name ILIKE `+arg("%"+f.Author+"%")+`)`)
+			WHERE ba.book_id=b.id AND a.name ILIKE `+arg("%"+escapeLike(f.Author)+"%")+` ESCAPE '\')`)
 	}
 	if f.Category != "" {
 		where = append(where, `EXISTS (
 			SELECT 1 FROM book_categories bc JOIN categories c ON c.id=bc.category_id
-			WHERE bc.book_id=b.id AND c.name ILIKE `+arg("%"+f.Category+"%")+`)`)
+			WHERE bc.book_id=b.id AND c.name ILIKE `+arg("%"+escapeLike(f.Category)+"%")+` ESCAPE '\')`)
 	}
 	if f.Series != "" {
-		where = append(where, "m.series_name ILIKE "+arg("%"+f.Series+"%"))
+		where = append(where, "m.series_name ILIKE "+arg("%"+escapeLike(f.Series)+"%")+" ESCAPE '\\'")
 	}
 	if f.Status != "" && f.UserID > 0 {
 		where = append(where, `EXISTS (
@@ -577,16 +579,30 @@ func (s *Store) UpsertBook(ctx context.Context, book models.Book, meta models.Ex
 	return id, nil
 }
 
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 func (s *Store) UpdateBookMetadata(ctx context.Context, bookID int64, title, subtitle, description, publisher, series, isbn13 string, authors, categories []string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Upsert so saves work even when no metadata row exists yet.
 	_, err = tx.Exec(ctx, `
-		UPDATE book_metadata SET title=$2, subtitle=NULLIF($3,''), description=NULLIF($4,''),
-		  publisher=NULLIF($5,''), series_name=NULLIF($6,''), isbn13=NULLIF($7,'')
-		WHERE book_id=$1
+		INSERT INTO book_metadata (book_id, title, subtitle, description, publisher, series_name, isbn13)
+		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), NULLIF($6,''), NULLIF($7,''))
+		ON CONFLICT (book_id) DO UPDATE SET
+		  title=EXCLUDED.title,
+		  subtitle=EXCLUDED.subtitle,
+		  description=EXCLUDED.description,
+		  publisher=EXCLUDED.publisher,
+		  series_name=EXCLUDED.series_name,
+		  isbn13=EXCLUDED.isbn13
 	`, bookID, title, subtitle, description, publisher, series, isbn13)
 	if err != nil {
 		return err
@@ -700,14 +716,63 @@ func (s *Store) CreateShelf(ctx context.Context, userID int64, name, icon string
 	return &sh, err
 }
 
-func (s *Store) AddToShelf(ctx context.Context, shelfID, bookID int64) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO shelf_books (shelf_id, book_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, shelfID, bookID)
-	return err
+func (s *Store) GetShelf(ctx context.Context, id, userID int64) (*models.Shelf, error) {
+	var sh models.Shelf
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, user_id, name, icon,
+		       (SELECT COUNT(*) FROM shelf_books sb WHERE sb.shelf_id=shelves.id)
+		FROM shelves WHERE id=$1 AND user_id=$2
+	`, id, userID).Scan(&sh.ID, &sh.UserID, &sh.Name, &sh.Icon, &sh.BookCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &sh, nil
 }
 
-func (s *Store) RemoveFromShelf(ctx context.Context, shelfID, bookID int64) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM shelf_books WHERE shelf_id=$1 AND book_id=$2`, shelfID, bookID)
-	return err
+func (s *Store) AddToShelf(ctx context.Context, shelfID, bookID, userID int64) error {
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO shelf_books (shelf_id, book_id)
+		SELECT $1, $2 FROM shelves WHERE id=$1 AND user_id=$3
+		ON CONFLICT DO NOTHING
+	`, shelfID, bookID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Either shelf missing/not owned, or already on shelf — distinguish ownership.
+		var owner int64
+		err := s.pool.QueryRow(ctx, `SELECT user_id FROM shelves WHERE id=$1`, shelfID).Scan(&owner)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if owner != userID {
+			return ErrNotFound
+		}
+	}
+	return nil
+}
+
+func (s *Store) RemoveFromShelf(ctx context.Context, shelfID, bookID, userID int64) error {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM shelf_books
+		WHERE shelf_id=$1 AND book_id=$2
+		  AND EXISTS (SELECT 1 FROM shelves sh WHERE sh.id=$1 AND sh.user_id=$3)
+	`, shelfID, bookID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := s.GetShelf(ctx, shelfID, userID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) DeleteShelf(ctx context.Context, id, userID int64) error {
@@ -715,7 +780,11 @@ func (s *Store) DeleteShelf(ctx context.Context, id, userID int64) error {
 	return err
 }
 
-func (s *Store) ShelfBooks(ctx context.Context, shelfID int64) ([]models.Book, error) {
+func (s *Store) ShelfBooks(ctx context.Context, shelfID, userID int64) ([]models.Book, error) {
+	// Ownership gate: only return books when the shelf belongs to userID.
+	if _, err := s.GetShelf(ctx, shelfID, userID); err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT b.id, b.library_id, b.library_path_id, b.file_name, b.file_sub_path, b.format,
 		       b.file_size, b.file_hash, b.deleted, b.added_on,
@@ -852,6 +921,12 @@ func nullStr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func (s *Store) CountBookdropReady(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM bookdrop_files WHERE status='ready'`).Scan(&n)
+	return n, err
 }
 
 func (s *Store) ListBookdrop(ctx context.Context) ([]models.BookdropFile, error) {

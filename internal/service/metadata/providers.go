@@ -29,7 +29,51 @@ type LookupResult struct {
 	Language    string
 }
 
-var httpClient = &http.Client{Timeout: 12 * time.Second}
+var httpClient = &http.Client{
+	Timeout: 12 * time.Second,
+	// Covers must not follow redirects to internal hosts.
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("too many redirects")
+		}
+		if err := validateCoverURL(req.URL.String()); err != nil {
+			return err
+		}
+		return nil
+	},
+}
+
+// Allowed cover hosts from known metadata providers.
+var coverHostAllowlist = map[string]bool{
+	"covers.openlibrary.org":      true,
+	"books.google.com":            true,
+	"books.googleusercontent.com": true,
+	"lh3.googleusercontent.com":   true,
+}
+
+func validateCoverURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid cover url")
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("cover url must be https")
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return fmt.Errorf("empty cover host")
+	}
+	if coverHostAllowlist[host] {
+		return nil
+	}
+	// Allow google books CDN subdomains.
+	if strings.HasSuffix(host, ".googleusercontent.com") ||
+		strings.HasSuffix(host, ".googleapis.com") ||
+		host == "www.googleapis.com" {
+		return nil
+	}
+	return fmt.Errorf("cover host not allowed: %s", host)
+}
 
 func Lookup(ctx context.Context, title, author, isbn string) ([]LookupResult, error) {
 	var results []LookupResult
@@ -77,14 +121,14 @@ func openLibraryISBN(ctx context.Context, isbn string) (*LookupResult, error) {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 	var data struct {
-		Title       string   `json:"title"`
-		Subtitle    string   `json:"subtitle"`
-		Publishers  []string `json:"publishers"`
-		PublishDate string   `json:"publish_date"`
-		NumberOfPages int    `json:"number_of_pages"`
-		Covers      []int    `json:"covers"`
-		ISBN10      []string `json:"isbn_10"`
-		ISBN13      []string `json:"isbn_13"`
+		Title         string   `json:"title"`
+		Subtitle      string   `json:"subtitle"`
+		Publishers    []string `json:"publishers"`
+		PublishDate   string   `json:"publish_date"`
+		NumberOfPages int      `json:"number_of_pages"`
+		Covers        []int    `json:"covers"`
+		ISBN10        []string `json:"isbn_10"`
+		ISBN13        []string `json:"isbn_13"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
@@ -131,15 +175,15 @@ func openLibrarySearch(ctx context.Context, title, author string) ([]LookupResul
 	}
 	var data struct {
 		Docs []struct {
-			Title         string   `json:"title"`
-			Subtitle      string   `json:"subtitle"`
-			AuthorName    []string `json:"author_name"`
-			Publisher     []string `json:"publisher"`
-			FirstPublish  int      `json:"first_publish_year"`
-			ISBN          []string `json:"isbn"`
-			CoverI        int      `json:"cover_i"`
-			Language      []string `json:"language"`
-			Subject       []string `json:"subject"`
+			Title        string   `json:"title"`
+			Subtitle     string   `json:"subtitle"`
+			AuthorName   []string `json:"author_name"`
+			Publisher    []string `json:"publisher"`
+			FirstPublish int      `json:"first_publish_year"`
+			ISBN         []string `json:"isbn"`
+			CoverI       int      `json:"cover_i"`
+			Language     []string `json:"language"`
+			Subject      []string `json:"subject"`
 		} `json:"docs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -209,15 +253,15 @@ func googleBooksSearch(ctx context.Context, title, author, isbn string) ([]Looku
 	var data struct {
 		Items []struct {
 			VolumeInfo struct {
-				Title         string   `json:"title"`
-				Subtitle      string   `json:"subtitle"`
-				Authors       []string `json:"authors"`
-				Publisher     string   `json:"publisher"`
-				PublishedDate string   `json:"publishedDate"`
-				Description   string   `json:"description"`
-				PageCount     int      `json:"pageCount"`
-				Categories    []string `json:"categories"`
-				Language      string   `json:"language"`
+				Title               string   `json:"title"`
+				Subtitle            string   `json:"subtitle"`
+				Authors             []string `json:"authors"`
+				Publisher           string   `json:"publisher"`
+				PublishedDate       string   `json:"publishedDate"`
+				Description         string   `json:"description"`
+				PageCount           int      `json:"pageCount"`
+				Categories          []string `json:"categories"`
+				Language            string   `json:"language"`
 				IndustryIdentifiers []struct {
 					Type       string `json:"type"`
 					Identifier string `json:"identifier"`
@@ -251,7 +295,7 @@ func googleBooksSearch(ctx context.Context, title, author, isbn string) ([]Looku
 		if r.CoverURL == "" {
 			r.CoverURL = v.ImageLinks.Small
 		}
-		r.CoverURL = strings.Replace(r.CoverURL, "http://", "https://", 1)
+		r.CoverURL = upgradeToHTTPS(r.CoverURL)
 		for _, id := range v.IndustryIdentifiers {
 			if id.Type == "ISBN_13" {
 				r.ISBN13 = id.Identifier
@@ -272,11 +316,29 @@ func firstN(ss []string, n int) []string {
 	return ss[:n]
 }
 
+// upgradeToHTTPS rewrites only the URL scheme from http to https.
+func upgradeToHTTPS(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" {
+		return raw
+	}
+	u.Scheme = "https"
+	return u.String()
+}
+
 func DownloadCover(ctx context.Context, coverURL string) ([]byte, string, error) {
 	if coverURL == "" {
 		return nil, "", fmt.Errorf("empty url")
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, coverURL, nil)
+	// Normalize common http covers to https before allowlist check.
+	coverURL = upgradeToHTTPS(coverURL)
+	if err := validateCoverURL(coverURL); err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, coverURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
 	req.Header.Set("User-Agent", "e-biblioteca/1.0")
 	resp, err := httpClient.Do(req)
 	if err != nil {

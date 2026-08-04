@@ -5,15 +5,26 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
-	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/jjones/e-biblioteca/internal/models"
 )
+
+// MaxZipEntryBytes caps individual zip entry reads (covers, ComicInfo, pages).
+const MaxZipEntryBytes = 32 << 20 // 32 MiB
+
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = MaxZipEntryBytes
+	}
+	return io.ReadAll(io.LimitReader(r, limit))
+}
 
 var SupportedExt = map[string]string{
 	".epub": "epub",
@@ -218,7 +229,7 @@ func extractEPUB(path string) (models.ExtractedMetadata, error) {
 				if err != nil {
 					break
 				}
-				data, _ := io.ReadAll(rc)
+				data, _ := readLimited(rc, MaxZipEntryBytes)
 				rc.Close()
 				if len(data) > 0 {
 					meta.CoverData = data
@@ -349,7 +360,7 @@ func extractCBZ(path string) (models.ExtractedMetadata, error) {
 	}
 	defer r.Close()
 
-	var firstImage *zip.File
+	var images []*zip.File
 	for _, f := range r.File {
 		name := strings.ToLower(f.Name)
 		if strings.HasSuffix(name, "comicinfo.xml") {
@@ -357,14 +368,14 @@ func extractCBZ(path string) (models.ExtractedMetadata, error) {
 			if err != nil {
 				continue
 			}
-			b, _ := io.ReadAll(rc)
+			b, _ := readLimited(rc, 1<<20)
 			rc.Close()
 			var ci struct {
-				Title  string `xml:"Title"`
-				Series string `xml:"Series"`
-				Number string `xml:"Number"`
-				Writer string `xml:"Writer"`
-				Genre  string `xml:"Genre"`
+				Title   string `xml:"Title"`
+				Series  string `xml:"Series"`
+				Number  string `xml:"Number"`
+				Writer  string `xml:"Writer"`
+				Genre   string `xml:"Genre"`
 				Summary string `xml:"Summary"`
 			}
 			if xml.Unmarshal(b, &ci) == nil {
@@ -385,20 +396,23 @@ func extractCBZ(path string) (models.ExtractedMetadata, error) {
 				}
 			}
 		}
-		if firstImage == nil {
-			ext := filepath.Ext(name)
-			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" {
-				// skip mac junk
-				if !strings.Contains(name, "__macosx") {
-					firstImage = f
-				}
-			}
+		if strings.Contains(name, "__macosx") {
+			continue
+		}
+		ext := filepath.Ext(name)
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" {
+			images = append(images, f)
 		}
 	}
-	if firstImage != nil && len(meta.CoverData) == 0 {
+	// Cover = first page in natural sort order (same as ListCBZPages), not zip directory order.
+	sort.Slice(images, func(i, j int) bool {
+		return naturalLess(images[i].Name, images[j].Name)
+	})
+	if len(images) > 0 && len(meta.CoverData) == 0 {
+		firstImage := images[0]
 		rc, err := firstImage.Open()
 		if err == nil {
-			data, _ := io.ReadAll(rc)
+			data, _ := readLimited(rc, MaxZipEntryBytes)
 			rc.Close()
 			meta.CoverData = data
 			meta.CoverExt = filepath.Ext(firstImage.Name)
@@ -427,14 +441,29 @@ func splitAuthors(s string) []string {
 	return cleanList(parts)
 }
 
-func onlyDigits(s string) string {
+// isbnChars keeps digits and a trailing X check character for ISBN-10.
+func isbnChars(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if r >= '0' && r <= '9' || r == 'X' || r == 'x' {
-			b.WriteRune(r)
+			b.WriteRune(unicode.ToUpper(r))
 		}
 	}
 	return b.String()
+}
+
+// onlyDigits is used by provider normalizers; keeps digits and ISBN-10 X.
+func onlyDigits(s string) string {
+	return isbnChars(s)
+}
+
+func isAllDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func ListCBZPages(path string) ([]string, error) {
@@ -454,8 +483,51 @@ func ListCBZPages(path string) ([]string, error) {
 			pages = append(pages, f.Name)
 		}
 	}
+	sort.Slice(pages, func(i, j int) bool {
+		return naturalLess(pages[i], pages[j])
+	})
 	return pages, nil
 }
+
+// naturalLess sorts so page9 < page10.
+func naturalLess(a, b string) bool {
+	ai, bi := 0, 0
+	for ai < len(a) && bi < len(b) {
+		ca, cb := a[ai], b[bi]
+		if isDigitByte(ca) && isDigitByte(cb) {
+			// skip leading zeros
+			for ai < len(a) && a[ai] == '0' {
+				ai++
+			}
+			for bi < len(b) && b[bi] == '0' {
+				bi++
+			}
+			as, bs := ai, bi
+			for ai < len(a) && isDigitByte(a[ai]) {
+				ai++
+			}
+			for bi < len(b) && isDigitByte(b[bi]) {
+				bi++
+			}
+			adigits, bdigits := a[as:ai], b[bs:bi]
+			if len(adigits) != len(bdigits) {
+				return len(adigits) < len(bdigits)
+			}
+			if adigits != bdigits {
+				return adigits < bdigits
+			}
+			continue
+		}
+		if ca != cb {
+			return ca < cb
+		}
+		ai++
+		bi++
+	}
+	return len(a) < len(b)
+}
+
+func isDigitByte(c byte) bool { return c >= '0' && c <= '9' }
 
 func ReadZipEntry(path, entry string) ([]byte, error) {
 	r, err := zip.OpenReader(path)
@@ -470,7 +542,7 @@ func ReadZipEntry(path, entry string) ([]byte, error) {
 				return nil, err
 			}
 			defer rc.Close()
-			return io.ReadAll(rc)
+			return readLimited(rc, MaxZipEntryBytes)
 		}
 	}
 	return nil, os.ErrNotExist
@@ -484,6 +556,7 @@ func FileSize(path string) int64 {
 	return fi.Size()
 }
 
+// HashFile returns a full-content SHA-256 hex digest for deduplication.
 func HashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -491,12 +564,8 @@ func HashFile(path string) (string, error) {
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(f, 8<<20)); err != nil {
+	if _, err := io.Copy(h, f); err != nil {
 		return "", err
-	}
-	fi, err := f.Stat()
-	if err == nil {
-		fmt.Fprintf(h, ":%d:%s", fi.Size(), filepath.Base(path))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

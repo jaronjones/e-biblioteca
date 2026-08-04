@@ -7,4 +7,5 @@ type NavData struct {
 	Theme         string
 	Themes        []string
 	BookdropCount int
+	CSRFToken     string
 }
