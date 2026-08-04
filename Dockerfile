@@ -1,5 +1,8 @@
 # Build
-FROM golang:1.24-bookworm AS build
+# Prefer images commonly present locally. Host Docker Hub pulls may fail when
+# IPv6 is broken (dial tcp [2600:...]:443: connect: invalid argument).
+# GOTOOLCHAIN=auto downloads the go.mod toolchain if the image Go is newer/older.
+FROM golang:1.26-bookworm AS build
 WORKDIR /src
 ENV GOTOOLCHAIN=auto
 COPY go.mod go.sum ./
@@ -7,10 +10,10 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/e-biblioteca ./cmd/server
 
-# Runtime
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget \
-  && rm -rf /var/lib/apt/lists/*
+# Runtime: alpine is widely cached; static binary needs no glibc.
+# ca-certificates for outbound HTTPS (metadata providers); wget for healthcheck.
+FROM alpine:3
+RUN apk add --no-cache ca-certificates wget
 WORKDIR /app
 COPY --from=build /out/e-biblioteca /app/e-biblioteca
 COPY web /app/web
