@@ -2184,12 +2184,12 @@ func ReaderPage(book models.Book, prog *models.Progress) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		if book.Format == "epub" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 198, "<div id=\"epub-viewer\" class=\"reader-stage\"></div><script src=\"https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js\"></script> <script src=\"https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js\"></script> <script src=\"/static/js/readers/annotations.js\"></script> <script src=\"/static/js/readers/epub.js\"></script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 198, "<div id=\"epub-viewer\" class=\"reader-stage\"></div><script src=\"/static/vendor/jszip.min.js\"></script> <script src=\"/static/vendor/epub.min.js\"></script> <script src=\"/static/js/readers/annotations.js\"></script> <script src=\"/static/js/readers/epub.js\"></script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else if book.Format == "pdf" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 199, "<div id=\"pdf-viewer\" class=\"reader-stage pdf-stage\"><div class=\"pdf-toolbar\"><button type=\"button\" class=\"btn btn-ghost btn-sm\" id=\"pdf-prev\">Prev</button> <span id=\"pdf-page-label\" class=\"muted\">Page 1</span> <button type=\"button\" class=\"btn btn-ghost btn-sm\" id=\"pdf-next\">Next</button></div><div id=\"pdf-canvas-wrap\"><canvas id=\"pdf-canvas\"></canvas><div id=\"pdf-text-layer\" class=\"pdf-text-layer\"></div><div id=\"pdf-hl-layer\" class=\"pdf-hl-layer\"></div></div></div><script src=\"https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js\"></script> <script src=\"/static/js/readers/annotations.js\"></script> <script src=\"/static/js/readers/pdf.js\"></script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 199, "<div id=\"pdf-viewer\" class=\"reader-stage pdf-stage\"><div class=\"pdf-toolbar\"><button type=\"button\" class=\"btn btn-ghost btn-sm\" id=\"pdf-prev\">Prev</button> <span id=\"pdf-page-label\" class=\"muted\">Page 1</span> <button type=\"button\" class=\"btn btn-ghost btn-sm\" id=\"pdf-next\">Next</button></div><div id=\"pdf-canvas-wrap\"><canvas id=\"pdf-canvas\"></canvas><div id=\"pdf-text-layer\" class=\"pdf-text-layer\"></div><div id=\"pdf-hl-layer\" class=\"pdf-hl-layer\"></div></div></div><script src=\"/static/vendor/pdf.min.js\"></script> <script src=\"/static/js/readers/annotations.js\"></script> <script src=\"/static/js/readers/pdf.js\"></script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

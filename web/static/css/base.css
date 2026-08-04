@@ -142,18 +142,31 @@ h3 { margin: 0; font-size: 1.05rem; }
 .lookup-list { display: grid; gap: .5rem; margin-top: .75rem; }
 .lookup-item { display: flex; justify-content: space-between; gap: 1rem; padding: .85rem; align-items: center; }
 
-.reader-page { display: flex; flex-direction: column; min-height: calc(100vh - 0px); margin: -1.5rem -1.75rem; height: 100vh; background: var(--color-base-100); }
+.reader-page {
+  display: flex; flex-direction: column;
+  margin: -1.5rem -1.75rem; height: 100vh; max-height: 100vh;
+  background: var(--color-base-100); overflow: hidden;
+}
 .reader-bar {
-  display: flex; align-items: center; gap: .75rem; padding: .6rem 1rem;
+  display: flex; align-items: center; gap: .75rem; padding: .6rem 1rem; flex-shrink: 0;
   border-bottom: 1px solid color-mix(in oklab, var(--color-base-content) 10%, transparent);
 }
 .reader-title { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.reader-body { flex: 1; min-height: 0; display: flex; }
-.reader-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.reader-stage { flex: 1; min-height: 0; display: grid; place-items: center; background: var(--color-base-200); }
+.reader-body { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
+.reader-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.reader-stage { flex: 1 1 auto; min-height: 0; width: 100%; background: var(--color-base-200); }
 .reader-stage iframe { width: 100%; height: 100%; border: 0; }
-#epub-viewer { width: 100%; height: 100%; }
-#cbz-viewer { grid-template-columns: auto 1fr auto; width: 100%; height: 100%; padding: 1rem; gap: .75rem; }
+/* epub.js needs a box with real pixel height; flex + position fills the main pane */
+#epub-viewer {
+  display: block; position: relative; flex: 1 1 auto;
+  min-height: 0; width: 100%; height: 100%;
+}
+#epub-viewer .epub-container,
+#epub-viewer > div { width: 100% !important; height: 100% !important; }
+#cbz-viewer {
+  display: grid; grid-template-columns: auto 1fr auto; place-items: center;
+  width: 100%; height: 100%; padding: 1rem; gap: .75rem;
+}
 #cbz-page { max-height: 100%; max-width: 100%; object-fit: contain; margin: 0 auto; }
 .audio-stage { width: min(480px, 92%); padding: 1.5rem; display: grid; gap: 1rem; justify-items: center; }
 .audio-cover { width: 220px; aspect-ratio: 1; object-fit: cover; border-radius: var(--radius-box, .75rem); }
