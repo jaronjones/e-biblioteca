@@ -34,6 +34,15 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+If the build fails resolving `docker.io` with `dial tcp [2600:…]:443: connect: invalid argument`, Docker is trying broken IPv6 for Hub. The Dockerfile prefers widely cached bases (`golang:1.26-bookworm`, `alpine:3`). Pull those over IPv4 once, or disable Docker/IPv6 for Hub:
+
+```bash
+docker pull golang:1.26-bookworm
+docker pull alpine:3
+docker compose up -d --build
+```
+
+
 Open `http://localhost:8080` (or the host port from `HTTP_PORT` in `.env`).
 
 1. Complete first-run setup (admin account)
