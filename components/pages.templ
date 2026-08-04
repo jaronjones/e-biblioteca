@@ -137,7 +137,7 @@ templ BookGrid(books []models.Book) {
 	}
 }
 
-templ BookDetailPage(book models.Book, prog *models.Progress, shelves []models.Shelf, user *models.User) {
+templ BookDetailPage(book models.Book, prog *models.Progress, shelves []models.Shelf, user *models.User, annotationCount int) {
 	<div class="page">
 		<div class="detail-layout">
 			<div class="detail-cover card">
@@ -156,6 +156,10 @@ templ BookDetailPage(book models.Book, prog *models.Progress, shelves []models.S
 					if user != nil && (user.IsAdmin || user.Permissions.CanEditMetadata) {
 						<a class="btn btn-ghost" href={ fmt.Sprintf("/books/%d/edit", book.ID) }>Edit metadata</a>
 					}
+					if annotationCount > 0 {
+						<a class="btn btn-ghost" href={ fmt.Sprintf("/annotations?book=%d", book.ID) }>{ fmt.Sprintf("%d annotations", annotationCount) }</a>
+						<a class="btn btn-ghost" href={ fmt.Sprintf("/books/%d/annotations/export", book.ID) }>Export annotations</a>
+					}
 				</div>
 			</div>
 			<div class="detail-body">
@@ -169,6 +173,9 @@ templ BookDetailPage(book models.Book, prog *models.Progress, shelves []models.S
 						<div class="progress-bar"><div class="progress-fill" style={ fmt.Sprintf("width:%.1f%%", prog.Percent) }></div></div>
 						<span class="muted">{ fmt.Sprintf("%.0f%% · %s", prog.Percent, prog.Status) }</span>
 					</div>
+				}
+				if annotationCount == 0 {
+					<p class="muted">No annotations yet. Highlight text or pin a location while reading.</p>
 				}
 				if book.Metadata.Description != nil && *book.Metadata.Description != "" {
 					<section class="section">
@@ -283,6 +290,35 @@ func progressJSON(p *models.Progress) string {
 		"status": p.Status,
 	})
 	return string(b)
+}
+
+func annotationsExportHref(f models.AnnotationFilter) string {
+	parts := []string{}
+	if f.BookID > 0 {
+		parts = append(parts, fmt.Sprintf("book=%d", f.BookID))
+	}
+	if f.LibraryID > 0 {
+		parts = append(parts, fmt.Sprintf("library=%d", f.LibraryID))
+	}
+	if f.Format != "" {
+		parts = append(parts, "format="+f.Format)
+	}
+	if f.Kind != "" {
+		parts = append(parts, "kind="+f.Kind)
+	}
+	if f.Color != "" {
+		parts = append(parts, "color="+f.Color)
+	}
+	if f.Tag != "" {
+		parts = append(parts, "tag="+f.Tag)
+	}
+	if f.Query != "" {
+		parts = append(parts, "q="+f.Query)
+	}
+	if len(parts) == 0 {
+		return "/annotations/export"
+	}
+	return "/annotations/export?" + strings.Join(parts, "&")
 }
 
 templ LibrariesPage(libs []models.Library, booksDir, errMsg string) {
@@ -505,32 +541,201 @@ templ ReaderPage(book models.Book, prog *models.Progress) {
 			<a class="btn btn-ghost btn-sm" href={ fmt.Sprintf("/books/%d", book.ID) }>← Back</a>
 			<div class="reader-title">{ book.Metadata.DisplayTitle(book.FileName) }</div>
 			<div id="reader-status" class="muted"></div>
+			<button type="button" class="btn btn-ghost btn-sm" id="ann-pin-btn" title="Pin current location (b)">Pin</button>
+			<button type="button" class="btn btn-primary btn-sm" id="ann-panel-toggle" title="Annotations (a)">Annotations</button>
 		</header>
-		if book.Format == "epub" {
-			<div id="epub-viewer" class="reader-stage"></div>
-			<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-			<script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
-			<script src="/static/js/readers/epub.js"></script>
-		} else if book.Format == "pdf" {
-			<div id="pdf-viewer" class="reader-stage">
-				<iframe title="PDF" src={ fmt.Sprintf("/stream/%d#page=1", book.ID) }></iframe>
+		<div class="reader-body">
+			<div class="reader-main">
+				if book.Format == "epub" {
+					<div id="epub-viewer" class="reader-stage"></div>
+					<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+					<script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+					<script src="/static/js/readers/annotations.js"></script>
+					<script src="/static/js/readers/epub.js"></script>
+				} else if book.Format == "pdf" {
+					<div id="pdf-viewer" class="reader-stage pdf-stage">
+						<div class="pdf-toolbar">
+							<button type="button" class="btn btn-ghost btn-sm" id="pdf-prev">Prev</button>
+							<span id="pdf-page-label" class="muted">Page 1</span>
+							<button type="button" class="btn btn-ghost btn-sm" id="pdf-next">Next</button>
+						</div>
+						<div id="pdf-canvas-wrap">
+							<canvas id="pdf-canvas"></canvas>
+							<div id="pdf-text-layer" class="pdf-text-layer"></div>
+							<div id="pdf-hl-layer" class="pdf-hl-layer"></div>
+						</div>
+					</div>
+					<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+					<script src="/static/js/readers/annotations.js"></script>
+					<script src="/static/js/readers/pdf.js"></script>
+				} else if book.Format == "cbz" {
+					<div id="cbz-viewer" class="reader-stage">
+						<button id="cbz-prev" class="btn btn-ghost" type="button">Prev</button>
+						<img id="cbz-page" alt="page"/>
+						<button id="cbz-next" class="btn btn-ghost" type="button">Next</button>
+					</div>
+					<script src="/static/js/readers/annotations.js"></script>
+					<script src="/static/js/readers/cbz.js"></script>
+				} else {
+					<div id="audio-viewer" class="reader-stage audio-stage card">
+						<img class="audio-cover" src={ fmt.Sprintf("/covers/%d", book.ID) } alt=""/>
+						<audio id="audio-player" controls src={ fmt.Sprintf("/stream/%d", book.ID) }></audio>
+					</div>
+					<script src="/static/js/readers/annotations.js"></script>
+					<script src="/static/js/readers/audio.js"></script>
+				}
 			</div>
-			<script src="/static/js/readers/pdf.js"></script>
-		} else if book.Format == "cbz" {
-			<div id="cbz-viewer" class="reader-stage">
-				<button id="cbz-prev" class="btn btn-ghost" type="button">Prev</button>
-				<img id="cbz-page" alt="page"/>
-				<button id="cbz-next" class="btn btn-ghost" type="button">Next</button>
-			</div>
-			<script src="/static/js/readers/cbz.js"></script>
-		} else {
-			<div id="audio-viewer" class="reader-stage audio-stage card">
-				<img class="audio-cover" src={ fmt.Sprintf("/covers/%d", book.ID) } alt=""/>
-				<audio id="audio-player" controls src={ fmt.Sprintf("/stream/%d", book.ID) }></audio>
-			</div>
-			<script src="/static/js/readers/audio.js"></script>
-		}
+			<aside class="ann-panel" id="ann-panel" hidden>
+				<div class="ann-panel-head">
+					<strong>Annotations</strong>
+					<button type="button" class="btn btn-ghost btn-sm" id="ann-panel-close">Close</button>
+				</div>
+				<div class="ann-filters" id="ann-filters">
+					<button type="button" class="chip active" data-kind="">All</button>
+					<button type="button" class="chip" data-kind="highlight">Highlights</button>
+					<button type="button" class="chip" data-kind="bookmark">Pins</button>
+					<button type="button" class="chip" data-kind="note">Notes</button>
+				</div>
+				<div class="ann-list" id="ann-list"></div>
+				<div class="ann-panel-foot">
+					<a class="btn btn-ghost btn-sm" href={ fmt.Sprintf("/books/%d/annotations/export", book.ID) }>Export MD</a>
+					<button type="button" class="btn btn-ghost btn-sm" id="ann-help-btn">Shortcuts</button>
+				</div>
+			</aside>
+		</div>
+		<div id="ann-toolbar" class="ann-toolbar" hidden>
+			<span class="ann-palette" id="ann-palette">
+				<button type="button" class="ann-swatch" data-color="yellow" title="yellow" style="--sw:var(--color-warning)"></button>
+				<button type="button" class="ann-swatch" data-color="green" title="green" style="--sw:var(--color-success)"></button>
+				<button type="button" class="ann-swatch" data-color="blue" title="blue" style="--sw:var(--color-info)"></button>
+				<button type="button" class="ann-swatch" data-color="pink" title="pink" style="--sw:var(--color-secondary)"></button>
+				<button type="button" class="ann-swatch" data-color="purple" title="purple" style="--sw:var(--color-primary)"></button>
+			</span>
+			<button type="button" class="btn btn-sm" id="ann-add-note">Note</button>
+			<button type="button" class="btn btn-sm" id="ann-add-pin">Pin</button>
+		</div>
+		<dialog id="ann-edit-dialog" class="ann-dialog">
+			<form method="dialog" id="ann-edit-form" class="form-stack">
+				<h3 id="ann-edit-title">Annotation</h3>
+				<p class="muted" id="ann-edit-quote"></p>
+				<label>Note<textarea class="textarea" id="ann-edit-note" rows="3" maxlength="10000"></textarea></label>
+				<label>Tags <span class="muted">(comma-separated)</span><input class="input" id="ann-edit-tags" maxlength="400"/></label>
+				<label>Color
+					<select class="select" id="ann-edit-color">
+						<option value="">None</option>
+						<option value="yellow">Yellow</option>
+						<option value="green">Green</option>
+						<option value="blue">Blue</option>
+						<option value="pink">Pink</option>
+						<option value="purple">Purple</option>
+					</select>
+				</label>
+				<div class="form-actions">
+					<button type="submit" class="btn btn-primary" value="save">Save</button>
+					<button type="button" class="btn btn-ghost" id="ann-edit-delete">Delete</button>
+					<button type="submit" class="btn btn-ghost" value="cancel">Cancel</button>
+				</div>
+			</form>
+		</dialog>
 		<script type="application/json" id="progress-data">{ progressJSON(prog) }</script>
+	</div>
+}
+
+templ AnnotationsPage(list []models.Annotation, total int, f models.AnnotationFilter, libs []models.Library) {
+	<div class="page">
+		<header class="page-header">
+			<div>
+				<h1>Annotations</h1>
+				<p class="muted">{ fmt.Sprintf("%d total", total) }</p>
+			</div>
+			<a class="btn btn-secondary" href={ annotationsExportHref(f) }>Export Markdown</a>
+		</header>
+		<form method="get" action="/annotations" class="card form-card filter-bar form-stack">
+			<div class="filter-row">
+				<label>Search<input class="input" type="search" name="q" value={ f.Query } placeholder="Quotes, notes, tags"/></label>
+				<label>Kind
+					<select class="select" name="kind">
+						<option value="">All</option>
+						<option value="highlight" selected?={ f.Kind == "highlight" }>Highlight</option>
+						<option value="bookmark" selected?={ f.Kind == "bookmark" }>Bookmark</option>
+						<option value="note" selected?={ f.Kind == "note" }>Note</option>
+					</select>
+				</label>
+				<label>Color
+					<select class="select" name="color">
+						<option value="">All</option>
+						for _, c := range []string{"yellow", "green", "blue", "pink", "purple"} {
+							<option value={ c } selected?={ f.Color == c }>{ c }</option>
+						}
+					</select>
+				</label>
+				<label>Format
+					<select class="select" name="format">
+						<option value="">All</option>
+						for _, fmtName := range []string{"epub", "pdf", "cbz", "mp3", "m4b", "m4a", "opus"} {
+							<option value={ fmtName } selected?={ f.Format == fmtName }>{ fmtName }</option>
+						}
+					</select>
+				</label>
+				<label>Library
+					<select class="select" name="library">
+						<option value="">All</option>
+						for _, lib := range libs {
+							<option value={ fmt.Sprintf("%d", lib.ID) } selected?={ f.LibraryID == lib.ID }>{ lib.Name }</option>
+						}
+					</select>
+				</label>
+				if f.BookID > 0 {
+					<input type="hidden" name="book" value={ fmt.Sprintf("%d", f.BookID) }/>
+				}
+			</div>
+			<div class="form-actions">
+				<button class="btn btn-primary" type="submit">Filter</button>
+				<a class="btn btn-ghost" href="/annotations">Clear</a>
+			</div>
+		</form>
+		if len(list) == 0 {
+			<div class="empty card">
+				<p>No annotations yet.</p>
+				<p class="muted">Open a book, select text to highlight, or press <kbd>b</kbd> to pin a location.</p>
+			</div>
+		} else {
+			<div class="list-stack ann-global-list">
+				for _, ann := range list {
+					<article class="card ann-global-item">
+						<div class="ann-global-meta">
+							<a href={ fmt.Sprintf("/books/%d", ann.BookID) } class="ann-book-title">{ ann.BookTitle }</a>
+							<span class={ "ann-kind-badge ann-kind-" + ann.Kind }>{ ann.Kind }</span>
+							if ann.Color != nil && *ann.Color != "" {
+								<span class={ "ann-color-dot ann-color-" + *ann.Color } title={ *ann.Color }></span>
+							}
+							<span class="muted">{ ann.CreatedAt.Format("2006-01-02") }</span>
+						</div>
+						if ann.Quote != "" {
+							<blockquote class="ann-quote">{ ann.Quote }</blockquote>
+						}
+						if ann.Note != "" {
+							<p class="ann-note-body">{ ann.Note }</p>
+						}
+						if len(ann.Tags) > 0 {
+							<div class="chip-row">
+								for _, t := range ann.Tags {
+									<span class="chip">{ t }</span>
+								}
+							</div>
+						}
+						<div class="form-actions">
+							<a class="btn btn-primary btn-sm" href={ fmt.Sprintf("/read/%d?annotation=%d", ann.BookID, ann.ID) }>Open</a>
+						</div>
+					</article>
+				}
+			</div>
+			if total > 50 {
+				<div class="pagination">
+					<p class="muted">Showing { fmt.Sprintf("%d", len(list)) } of { fmt.Sprintf("%d", total) }. Refine filters or export for the full set.</p>
+				</div>
+			}
+		}
 	</div>
 }
 

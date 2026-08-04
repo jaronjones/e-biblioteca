@@ -22,6 +22,7 @@ templ Layout(title string, nav NavData, body templ.Component) {
 						<nav class="side-nav">
 							<a class={ navClass(nav.Active, "dashboard") } href="/">Dashboard</a>
 							<a class={ navClass(nav.Active, "books") } href="/books">Books</a>
+							<a class={ navClass(nav.Active, "annotations") } href="/annotations">Annotations</a>
 							<a class={ navClass(nav.Active, "libraries") } href="/libraries">Libraries</a>
 							<a class={ navClass(nav.Active, "shelves") } href="/shelves">Shelves</a>
 							<a class={ navClass(nav.Active, "magic") } href="/magic-shelves">Magic shelves</a>

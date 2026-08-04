@@ -13,6 +13,7 @@ A self-hosted digital library for ebooks, comics, and audiobooks.
 - Cover grid, full-text search, shelves, and rule-based magic shelves
 - In-browser readers: EPUB, PDF, CBZ, and HTML5 audio
 - Per-user reading progress
+- Annotations: highlights, notes, and bookmarks (EPUB, PDF, CBZ, audiobook timestamps) with library-wide browser and Markdown export
 - OPDS 1.2 catalog for compatible clients
 - User-selectable themes (DaisyUI-compatible token packs via `data-theme`)
 
