@@ -404,7 +404,7 @@ func (s *Store) ListAnnotationsForExport(ctx context.Context, userID int64, f mo
 	where := strings.Join(conds, " AND ")
 	q := fmt.Sprintf(`
 		SELECT a.id, a.user_id, a.book_id, a.kind, a.color, a.quote, a.note, a.tags, a.anchor, a.sort_key, a.created_at, a.updated_at,
-		       COALESCE(m.title, b.file_name), b.format,
+		       COALESCE(m.title, b.file_name) AS book_title, b.format,
 		       COALESCE((SELECT string_agg(au.name, ', ' ORDER BY au.name) FROM book_authors ba JOIN authors au ON au.id=ba.author_id WHERE ba.book_id=b.id), '')
 		FROM annotations a
 		JOIN books b ON b.id = a.book_id AND b.deleted = FALSE
