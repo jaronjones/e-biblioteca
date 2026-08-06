@@ -2,11 +2,11 @@ package metadata
 
 import (
 	"archive/zip"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,7 +60,9 @@ func Extract(path string) (models.ExtractedMetadata, error) {
 			meta = merge(meta, m)
 		}
 	case "pdf":
-		// lightweight: filename only; covers come from providers
+		if m, err := extractPDF(path); err == nil {
+			meta = merge(meta, m)
+		}
 	case "m4b", "m4a", "mp3", "opus":
 		// filename defaults; optional tag parse later
 	}
@@ -88,6 +90,12 @@ func merge(base, over models.ExtractedMetadata) models.ExtractedMetadata {
 	}
 	if over.Language != "" {
 		base.Language = over.Language
+	}
+	if over.PublishedDate != "" {
+		base.PublishedDate = over.PublishedDate
+	}
+	if over.PageCount > 0 {
+		base.PageCount = over.PageCount
 	}
 	if over.ISBN10 != "" {
 		base.ISBN10 = over.ISBN10
@@ -117,12 +125,15 @@ func merge(base, over models.ExtractedMetadata) models.ExtractedMetadata {
 type opfPackage struct {
 	Metadata opfMetadata `xml:"metadata"`
 	Manifest struct {
-		Items []struct {
-			ID   string `xml:"id,attr"`
-			Href string `xml:"href,attr"`
-			Type string `xml:"media-type,attr"`
-		} `xml:"item"`
+		Items []opfItem `xml:"item"`
 	} `xml:"manifest"`
+}
+
+type opfItem struct {
+	ID         string `xml:"id,attr"`
+	Href       string `xml:"href,attr"`
+	Type       string `xml:"media-type,attr"`
+	Properties string `xml:"properties,attr"`
 }
 
 type opfMetadata struct {
@@ -136,15 +147,10 @@ type opfMetadata struct {
 		Scheme string `xml:"scheme,attr"`
 		Value  string `xml:",chardata"`
 	} `xml:"identifier"`
-}
-
-type containerRootfile struct {
-	FullPath  string `xml:"full-path,attr"`
-	MediaType string `xml:"media-type,attr"`
-}
-
-type containerXML struct {
-	Rootfiles []containerRootfile `xml:"rootfiles>rootfile"`
+	Metas []struct {
+		Name    string `xml:"name,attr"`
+		Content string `xml:"content,attr"`
+	} `xml:"meta"`
 }
 
 func extractEPUB(path string) (models.ExtractedMetadata, error) {
@@ -155,40 +161,7 @@ func extractEPUB(path string) (models.ExtractedMetadata, error) {
 	}
 	defer r.Close()
 
-	var opfPath string
-	// Prefer META-INF/container.xml (EPUB spec).
-	for _, f := range r.File {
-		if strings.EqualFold(f.Name, "META-INF/container.xml") {
-			rc, err := f.Open()
-			if err != nil {
-				break
-			}
-			b, err := readLimited(rc, 1<<20)
-			rc.Close()
-			if err != nil {
-				break
-			}
-			var c containerXML
-			if xml.Unmarshal(b, &c) == nil && len(c.Rootfiles) > 0 && c.Rootfiles[0].FullPath != "" {
-				opfPath = c.Rootfiles[0].FullPath
-			} else if i := bytes.Index(b, []byte(`full-path="`)); i >= 0 {
-				rest := b[i+11:]
-				if j := bytes.IndexByte(rest, '"'); j >= 0 {
-					opfPath = string(rest[:j])
-				}
-			}
-			break
-		}
-	}
-	// Fallback: first .opf in the archive.
-	if opfPath == "" {
-		for _, f := range r.File {
-			if strings.HasSuffix(strings.ToLower(f.Name), ".opf") {
-				opfPath = f.Name
-				break
-			}
-		}
-	}
+	opfPath := findOPFPath(&r.Reader)
 	if opfPath == "" {
 		return meta, nil
 	}
@@ -227,44 +200,120 @@ func extractEPUB(path string) (models.ExtractedMetadata, error) {
 	}
 	meta.Categories = cleanList(pkg.Metadata.Subjects)
 	for _, id := range pkg.Metadata.Identifiers {
-		v := strings.TrimSpace(id.Value)
-		v = strings.ReplaceAll(v, "-", "")
-		digits := isbnChars(v)
-		switch {
-		case len(digits) == 13 && isAllDigits(digits):
-			meta.ISBN13 = digits
-		case len(digits) == 10:
-			meta.ISBN10 = digits
+		// values arrive as "urn:isbn:978...", "isbn:978..." or bare;
+		// the check digit is the real gate, not the declared scheme
+		raw := strings.ToLower(strings.TrimSpace(id.Value))
+		raw = strings.TrimPrefix(raw, "urn:")
+		raw = strings.TrimPrefix(raw, "isbn:")
+		cleaned := strings.ToUpper(onlyDigits(raw))
+		if meta.ISBN13 == "" && isValidISBN13(cleaned) {
+			meta.ISBN13 = cleaned
+		} else if meta.ISBN10 == "" && isValidISBN10(cleaned) {
+			meta.ISBN10 = cleaned
 		}
 	}
 
-	// cover
-	baseDir := filepath.ToSlash(filepath.Dir(opfPath))
-	for _, item := range pkg.Manifest.Items {
-		if strings.Contains(strings.ToLower(item.ID), "cover") || strings.HasPrefix(item.Type, "image/") {
-			href := item.Href
-			if baseDir != "." && baseDir != "" {
-				href = baseDir + "/" + href
-			}
-			href = filepath.ToSlash(pathClean(href))
-			for _, f := range r.File {
-				if filepath.ToSlash(f.Name) == href || strings.HasSuffix(filepath.ToSlash(f.Name), href) {
-					rc, err := f.Open()
-					if err != nil {
-						break
-					}
-					data, _ := readLimited(rc, MaxZipEntryBytes)
-					rc.Close()
-					if len(data) > 0 {
-						meta.CoverData = data
-						meta.CoverExt = extFromType(item.Type, f.Name)
-						return meta, nil
-					}
+	if item := findEPUBCover(&pkg); item != nil {
+		href := item.Href
+		if u, err := url.PathUnescape(href); err == nil {
+			href = u
+		}
+		if baseDir := filepath.ToSlash(filepath.Dir(opfPath)); baseDir != "." && baseDir != "" {
+			href = baseDir + "/" + href
+		}
+		href = pathClean(href)
+		for _, f := range r.File {
+			name := filepath.ToSlash(f.Name)
+			if name == href || strings.HasSuffix(name, href) {
+				rc, err := f.Open()
+				if err != nil {
+					break
 				}
+				data, _ := readLimited(rc, MaxZipEntryBytes)
+				rc.Close()
+				if len(data) > 0 {
+					meta.CoverData = data
+					meta.CoverExt = extFromType(item.Type, f.Name)
+				}
+				break
 			}
 		}
 	}
 	return meta, nil
+}
+
+// findOPFPath resolves the package document the spec way — via
+// META-INF/container.xml — and only falls back to "any .opf entry" when
+// the container is missing or unparseable. Zip entry order is arbitrary,
+// so scanning for .opf first can pick a stray package file.
+func findOPFPath(r *zip.Reader) string {
+	for _, f := range r.File {
+		if !strings.EqualFold(f.Name, "META-INF/container.xml") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			break
+		}
+		b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
+		rc.Close()
+		var c struct {
+			Rootfiles []struct {
+				FullPath  string `xml:"full-path,attr"`
+				MediaType string `xml:"media-type,attr"`
+			} `xml:"rootfiles>rootfile"`
+		}
+		if xml.Unmarshal(b, &c) == nil {
+			for _, rf := range c.Rootfiles {
+				if rf.FullPath != "" && (rf.MediaType == "" || strings.Contains(rf.MediaType, "oebps-package")) {
+					return rf.FullPath
+				}
+			}
+		}
+		break
+	}
+	for _, f := range r.File {
+		if strings.HasSuffix(strings.ToLower(f.Name), ".opf") {
+			return f.Name
+		}
+	}
+	return ""
+}
+
+// findEPUBCover picks the cover in spec-priority order: the EPUB3
+// cover-image manifest property, then the EPUB2 <meta name="cover"> item-ID
+// indirection, then name heuristics. Returning nil beats guessing: a wrong
+// embedded cover blocks the provider cover from being fetched later.
+func findEPUBCover(pkg *opfPackage) *opfItem {
+	items := pkg.Manifest.Items
+	for i := range items {
+		for _, p := range strings.Fields(items[i].Properties) {
+			if p == "cover-image" {
+				return &items[i]
+			}
+		}
+	}
+	for _, m := range pkg.Metadata.Metas {
+		if !strings.EqualFold(strings.TrimSpace(m.Name), "cover") {
+			continue
+		}
+		id := strings.TrimSpace(m.Content)
+		for i := range items {
+			if items[i].ID == id && strings.HasPrefix(items[i].Type, "image/") {
+				return &items[i]
+			}
+		}
+	}
+	for i := range items {
+		if !strings.HasPrefix(items[i].Type, "image/") {
+			continue
+		}
+		name := strings.ToLower(items[i].ID + " " + items[i].Href)
+		if strings.Contains(name, "cover") {
+			return &items[i]
+		}
+	}
+	return nil
 }
 
 func pathClean(p string) string {

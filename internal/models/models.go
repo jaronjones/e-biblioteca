@@ -126,6 +126,60 @@ type Progress struct {
 	UpdatedAt time.Time
 }
 
+// Annotation kinds and colors for private multi-format highlights/notes/bookmarks.
+const (
+	AnnotationKindHighlight = "highlight"
+	AnnotationKindNote      = "note"
+	AnnotationKindBookmark  = "bookmark"
+
+	// MaxAnnotationsPerBook is the soft cap per user per book (PRD Q5).
+	MaxAnnotationsPerBook = 5000
+	MaxNoteLen            = 10000
+	MaxQuoteLen           = 8000
+	MaxTags               = 32
+	MaxTagLen             = 40
+)
+
+// AllowedAnnotationColors are stored as names; UI maps to theme tokens.
+var AllowedAnnotationColors = map[string]bool{
+	"yellow": true,
+	"green":  true,
+	"blue":   true,
+	"pink":   true,
+	"purple": true,
+}
+
+type Annotation struct {
+	ID        int64           `json:"id"`
+	UserID    int64           `json:"user_id"`
+	BookID    int64           `json:"book_id"`
+	Kind      string          `json:"kind"`
+	Color     *string         `json:"color,omitempty"`
+	Quote     string          `json:"quote"`
+	Note      string          `json:"note"`
+	Tags      []string        `json:"tags"`
+	Anchor    json.RawMessage `json:"anchor"`
+	SortKey   string          `json:"sort_key"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+	// Joined for global list / export
+	BookTitle  string `json:"book_title,omitempty"`
+	BookFormat string `json:"book_format,omitempty"`
+	Authors    string `json:"authors,omitempty"`
+}
+
+type AnnotationFilter struct {
+	BookID    int64
+	LibraryID int64
+	Format    string
+	Kind      string
+	Color     string
+	Tag       string
+	Query     string
+	Limit     int
+	Offset    int
+}
+
 type BookdropFile struct {
 	ID           int64
 	Path         string

@@ -9,7 +9,7 @@
 ## Primary packages
 - `internal/service/bookdrop`
 - Handlers: `/bookdrop`, `/upload`
-
 ## Status
 Implemented as part of Phase 1. Uploads are capped with `MaxBytesReader`, stream to
-disk via temp+rename, and reject paths outside `BOOKS_DIR`.
+disk via temp+rename, and reject paths outside `BOOKS_DIR`. Enrichment shares
+`metadata.Enrich` with BookDrop intake.

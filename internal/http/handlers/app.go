@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -126,6 +127,14 @@ func (a *App) Routes() http.Handler {
 		pr.Get("/stream/{id}", a.streamFile)
 		pr.Post("/progress/{id}", a.saveProgress)
 		pr.Get("/api/progress/{id}", a.getProgress)
+
+		pr.Get("/annotations", a.annotationsPage)
+		pr.Get("/annotations/export", a.exportAnnotations)
+		pr.Get("/books/{id}/annotations/export", a.exportAnnotations)
+		pr.Get("/api/books/{id}/annotations", a.listBookAnnotationsAPI)
+		pr.Post("/api/books/{id}/annotations", a.createBookAnnotationAPI)
+		pr.Patch("/api/annotations/{id}", a.patchAnnotationAPI)
+		pr.Delete("/api/annotations/{id}", a.deleteAnnotationAPI)
 
 		pr.Get("/settings", a.settings)
 		pr.Post("/settings/theme", a.setTheme)
@@ -453,7 +462,8 @@ func (a *App) bookDetail(w http.ResponseWriter, r *http.Request) {
 	u := a.currentUser(r)
 	prog, _ := a.Store.GetProgress(r.Context(), u.ID, id)
 	shelves, _ := a.Store.ListShelves(r.Context(), u.ID)
-	a.render(w, r, book.Metadata.DisplayTitle(book.FileName), "books", components.BookDetailPage(*book, prog, shelves, u))
+	annCount, _ := a.Store.CountAnnotationsForBook(r.Context(), u.ID, id)
+	a.render(w, r, book.Metadata.DisplayTitle(book.FileName), "books", components.BookDetailPage(*book, prog, shelves, u, annCount))
 }
 
 func (a *App) bookEditGet(w http.ResponseWriter, r *http.Request) {
@@ -950,6 +960,10 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta, _ := metadata.Extract(dest)
+	// bounded so a slow provider can't stall the upload response
+	ectx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	metadata.Enrich(ectx, &meta)
+	cancel()
 	hash, _ := metadata.HashFile(dest)
 	lpID := lib.Paths[0].ID
 	book := models.Book{

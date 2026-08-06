@@ -8,8 +8,7 @@
 ## Primary packages
 - `web/static/js/readers/*`
 - Handlers: `/read/{id}`, `/progress/{id}`, `/stream/{id}`
-
 ## Status
 Implemented as part of Phase 1. EPUB stream must use `{ openAs: 'epub' }` because
-`/stream/{id}` has no file extension. Reader scripts are `defer` so CSRF + progress
-JSON are ready before they run. Manual E2E steps: `.agents/skills/testing-e-biblioteca/`.
+`/stream/{id}` has no file extension. Reader scripts load after progress JSON so
+`#progress-data` exists. Manual E2E steps: `.agents/skills/testing-e-biblioteca/`.

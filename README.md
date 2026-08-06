@@ -13,6 +13,7 @@ A self-hosted digital library for ebooks, comics, and audiobooks.
 - Cover grid, full-text search, shelves, and rule-based magic shelves
 - In-browser readers: EPUB, PDF, CBZ, and HTML5 audio
 - Per-user reading progress
+- Annotations: highlights, notes, and bookmarks (EPUB, PDF, CBZ, audiobook timestamps) with library-wide browser and Markdown export
 - OPDS 1.2 catalog for compatible clients
 - User-selectable themes (DaisyUI-compatible token packs via `data-theme`)
 
@@ -32,6 +33,15 @@ cp .env.example .env
 # edit POSTGRES_PASSWORD
 docker compose up -d --build
 ```
+
+If the build fails resolving `docker.io` with `dial tcp [2600:…]:443: connect: invalid argument`, Docker is trying broken IPv6 for Hub. The Dockerfile prefers widely cached bases (`golang:1.26-bookworm`, `alpine:3`). Pull those over IPv4 once, or disable Docker/IPv6 for Hub:
+
+```bash
+docker pull golang:1.26-bookworm
+docker pull alpine:3
+docker compose up -d --build
+```
+
 
 Open `http://localhost:8080` (or the host port from `HTTP_PORT` in `.env`).
 
@@ -88,7 +98,7 @@ Themes live in `web/static/css/themes.css` as CSS custom property packs. UI comp
 
 ## Offline / air-gapped
 
-Frontend libraries (htmx, JSZip, epub.js) are vendored under `web/static/js/vendor/`. No CDN access is required at runtime. See that directory’s README for versions and refresh URLs.
+Frontend libraries (htmx, JSZip, epub.js, pdf.js) are vendored under `web/static/vendor/`. No CDN access is required at runtime.
 
 ## Development checks
 
@@ -103,7 +113,11 @@ CI runs the same on every pull request (`.github/workflows/ci.yml`).
 
 ## Implementation phases
 
-See [docs/phases/README.md](docs/phases/README.md) for the phase map. Core features shipped in Phase 1; Phase 8 hardens docs, tests, CI, and offline assets.
+See [docs/phases/README.md](docs/phases/README.md) for the phase map.
+
+## Roadmap
+
+Planned features and their status live in [ROADMAP.md](ROADMAP.md).
 
 ## License
 
