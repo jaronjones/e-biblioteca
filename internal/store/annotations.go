@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	ErrAnnotationLimit  = errors.New("annotation limit exceeded")
+	ErrAnnotationLimit   = errors.New("annotation limit exceeded")
 	ErrInvalidAnnotation = errors.New("invalid annotation")
 )
 
